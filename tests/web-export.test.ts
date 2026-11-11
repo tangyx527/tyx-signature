@@ -2,6 +2,7 @@ import test,{type TestContext} from 'node:test';
 import assert from 'node:assert/strict';
 import {audioEnvelope,audioWindow,prepareAudio,withCancellation} from '../web/audio';
 import {checkExportSupport,exportVideo} from '../web/export';
+import {gifSize,exportGif} from '../web/gif';
 import {defaultWebConfig} from '../web/model';
 
 function globals(t:TestContext,values:Record<string,unknown>){
@@ -117,6 +118,18 @@ test('an audio scheduling error still disconnects both created nodes',async t=>{
   const graph=audioGraph(t,true);
   await assert.rejects(prepareAudio(new File(['audio'],'clip.wav'),defaultWebConfig().audio,3),/source unavailable/);
   assert.equal(graph.calls.sourceDisconnected,1);assert.equal(graph.calls.gainDisconnected,1);
+});
+
+test('gif output sizes cap the long edge at 720 with even dimensions',()=>{
+  assert.deepEqual(gifSize('landscape'),{width:720,height:406});
+  assert.deepEqual(gifSize('portrait'),{width:406,height:720});
+  assert.deepEqual(gifSize('square'),{width:720,height:720});
+});
+
+test('gif export rejects unsupported environments and honors cancellation before browser work',async()=>{
+  await assert.rejects(exportGif(defaultWebConfig()),/浏览器环境/);
+  const controller=new AbortController();controller.abort();
+  await assert.rejects(exportGif(defaultWebConfig(),{signal:controller.signal}),{name:'AbortError'});
 });
 
 test('MP4 cancellation awaits encoder cleanup before releasing the canvas and returning',async t=>{

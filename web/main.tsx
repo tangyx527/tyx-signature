@@ -2,6 +2,7 @@ import React,{useEffect,useMemo,useRef,useState} from 'react';
 import {createRoot} from 'react-dom/client';
 import {canvasSize,clamp,defaultWebConfig,loadConfig,parseConfigFile,saveConfig,validateConfig,type PersonConfig,type WebConfig} from './model';
 import {prepareScene,type PreparedScene} from './renderer';
+import {gifSize,exportGif} from './gif';
 import {Preview} from './Preview';
 import {ColorField,Details,Icon,Range,Section,Toggle,UtilityMenu} from './ui';
 import {MorphNav} from './MorphNav';
@@ -10,7 +11,7 @@ import {categoryForDecoration,decorationCatalog,decorationCategories,type Decora
 import './style.css';
 
 type Tab='signature'|'decoration'|'export';
-type Job={status:'idle'|'checking'|'working'|'done'|'error'|'cancelled';progress:number;stage:string;url?:string;fileName?:string};
+type Job={status:'idle'|'checking'|'working'|'done'|'error'|'cancelled';progress:number;stage:string;url?:string;fileName?:string;kind?:'mp4'|'gif'};
 const idle:Job={status:'idle',progress:0,stage:''};
 function downloadText(text:string,name:string){const url=URL.createObjectURL(new Blob([text],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
 function directFontConfig(config:WebConfig):WebConfig{const next=structuredClone(config);next.people.forEach(person=>{person.scheme='classic';person.font.family='tyx-brush';person.font.size=240;});return next;}
@@ -39,23 +40,37 @@ function App(){
   const reset=()=>{setUndo({config:structuredClone(config),audio:audioFile});setConfig(defaultWebConfig());setSelected(0);setAudioFile(null);setNotice('已恢复初始方案，可以撤销。');};
   const importFile=async(file?:File)=>{if(!file)return;try{if(file.size>1024*1024)throw new Error('配置文件过大，请选择本工具导出的 JSON 配置');const next=directFontConfig(parseConfigFile(await file.text()));setConfig(next);setSelected(0);setAudioFile(null);setNotice('配置已导入。若需要音乐，请重新选择音频文件。');}catch(e){setNotice(e instanceof Error?e.message:'配置导入失败');}finally{if(importInput.current)importInput.current.value='';}};
   const chooseAudio=(file?:File)=>{if(!file)return;if(file.size>200*1024*1024){setNotice('这段音频超过 200 MB，请先选择较短的音频片段。');return;}setAudioFile(file);setAudioDuration(0);update(c=>{c.audio.start=0;});};
-  const exportMp4=async()=>{
+  const runExport=async(kind:'mp4'|'gif')=>{
     if(busy||prepared.error)return;setPauseToken(t=>t+1);setJob({status:'checking',progress:0,stage:'正在检查当前浏览器…'});
     const controller=new AbortController();abort.current=controller;
+    const onProgress=(progress:number,stage:string)=>setJob({status:'working',progress:clamp(progress,0,1),stage});
     try{
-      const snapshot=validateConfig(structuredClone(config));const {checkExportSupport,exportVideo}=await import('./export');
-      const support=await checkExportSupport(snapshot,audioFile);if(controller.signal.aborted)throw new DOMException('已取消','AbortError');
-      if(!support.supported)throw new Error(support.reason??'当前浏览器无法导出 MP4，请换系统浏览器或电脑重试。');
-      setJob({status:'working',progress:0,stage:'准备绘制…'});
-      const blob=await exportVideo(snapshot,{audioFile,signal:controller.signal,onProgress:(progress,stage)=>setJob({status:'working',progress:clamp(progress,0,1),stage})});
-      if(lastUrl.current)URL.revokeObjectURL(lastUrl.current);const url=URL.createObjectURL(blob);lastUrl.current=url;
-      const names=snapshot.people.slice(0,snapshot.mode==='couple'?2:1).map(p=>p.name.replace(/[^a-z0-9-]/gi,'')).join('-');
-      setJob({status:'done',progress:1,stage:'视频已做好，可以下载了。',url,fileName:`tyx-${names||'signature'}-${snapshot.canvas.aspect}.mp4`});
+      const snapshot=validateConfig(structuredClone(config));
+      if(kind==='mp4'){
+        const {checkExportSupport,exportVideo}=await import('./export');
+        const support=await checkExportSupport(snapshot,audioFile);if(controller.signal.aborted)throw new DOMException('已取消','AbortError');
+        if(!support.supported)throw new Error(support.reason??'当前浏览器无法导出 MP4，请换系统浏览器或电脑重试。');
+        setJob({status:'working',progress:0,stage:'准备绘制…'});
+        const blob=await exportVideo(snapshot,{audioFile,signal:controller.signal,onProgress});
+        finishJob(blob,kind,snapshot);
+      }else{
+        // GIF does not carry music, so the audio selection is ignored here.
+        setJob({status:'working',progress:0,stage:'准备绘制…'});
+        const blob=await exportGif(snapshot,{signal:controller.signal,onProgress});
+        finishJob(blob,kind,snapshot);
+      }
     }catch(e){if(controller.signal.aborted||(e instanceof DOMException&&e.name==='AbortError'))setJob({status:'cancelled',progress:0,stage:'已取消，设计已保留。'});
       else setJob({status:'error',progress:0,stage:e instanceof Error?e.message:'导出失败，请重试。'});
     }finally{abort.current=null;}
   };
+  const finishJob=(blob:Blob,kind:'mp4'|'gif',snapshot:WebConfig)=>{
+    if(lastUrl.current)URL.revokeObjectURL(lastUrl.current);const url=URL.createObjectURL(blob);lastUrl.current=url;
+    const names=snapshot.people.slice(0,snapshot.mode==='couple'?2:1).map(p=>p.name.replace(/[^a-z0-9-]/gi,'')).join('-');
+    setJob({status:'done',progress:1,stage:kind==='gif'?'GIF 已做好，可以下载了。':'视频已做好，可以下载了。',url,kind,fileName:`tyx-${names||'signature'}-${snapshot.canvas.aspect}.${kind}`});
+  };
+  const exportMp4=()=>runExport('mp4'),exportGifFile=()=>runExport('gif');
   const ratio=canvasSize(config.canvas.aspect);
+  const gif=gifSize(config.canvas.aspect);
   const personPicker=config.mode==='couple'&&<div className="person-tabs" role="group" aria-label="编辑哪一组签名">{([0,1] as const).map(i=><button key={i} className={`person-tab ${selected===i?'active':''}`} aria-pressed={selected===i} onClick={()=>setSelected(i)}><span className="person-dot" style={{background:config.people[i].ink.color,borderColor:config.people[i].glow.color}}/>{i===0?'第一位':'第二位'}<span className="mini-label">{config.people[i].name||'未命名'}</span></button>)}</div>;
   return <div className="app-shell">
     <a className="skip-link" href="#signature-workspace">跳到签名编辑区</a>
@@ -93,13 +108,13 @@ function App(){
         <label className="audio-attach" onDragOver={event=>event.preventDefault()} onDrop={event=>{event.preventDefault();chooseAudio(event.dataTransfer.files[0]);}}><Icon name="music" size={16}/><span>{audioFile?'更换音乐':'添加音乐'}<small>可选</small></span><Icon name="upload" size={14}/><input className="file-input" aria-label="上传音乐" type="file" accept="audio/*" onChange={event=>{chooseAudio(event.target.files?.[0]);event.target.value='';}}/></label>
         {audioFile&&<div className="audio-card"><strong>{audioFile.name}</strong><button className="icon-button" aria-label="移除音乐" onClick={()=>setAudioFile(null)}><Icon name="close" size={13}/></button>{audioUrl&&<audio key={audioUrl} ref={audition} onPlay={()=>setPauseToken(t=>t+1)} src={audioUrl} controls preload="metadata" onLoadedMetadata={event=>setAudioDuration(event.currentTarget.duration)} onError={()=>setNotice('无法读取这段音频，请换一段浏览器能播放的音频。')}/>}</div>}
         {audioFile&&<Details title="音乐设置"><div className="advanced-grid"><Range title="音乐起点" value={config.audio.start} min={0} max={Math.max(1,Math.min(3600,audioDuration||60))} step={.1} suffix="秒" onChange={n=>update(c=>{c.audio.start=n;})}/><Range title="音乐音量" value={config.audio.volume} min={0} max={1} step={.05} onChange={n=>update(c=>{c.audio.volume=n;})}/><Range title="淡入" value={config.audio.fadeIn} min={0} max={3} step={.05} suffix="秒" onChange={n=>update(c=>{c.audio.fadeIn=n;})}/><Range title="淡出" value={config.audio.fadeOut} min={0} max={3} step={.05} suffix="秒" onChange={n=>update(c=>{c.audio.fadeOut=n;})}/></div></Details>}
-        </div><div className="export-inline-summary">MP4 · {ratio.width} × {ratio.height} · 30 帧</div>
+        </div><div className="export-inline-summary">MP4 · {ratio.width} × {ratio.height} · 30 帧<br/>GIF · {gif.width} × {gif.height} · 15 帧 · 不含音乐</div>
       </div>}
     </fieldset>
     {tab==='export'&&<div className="export-inline-actions">
-      {job.status!=='idle'&&<div className={`export-progress ${job.status==='error'?'notice error':''}`} data-status={job.status} role="status"><span>{job.stage}</span>{busy&&<div className="progress-track" role="progressbar" aria-label="视频生成进度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(job.progress*100)}><span style={{transform:`scaleX(${job.progress})`}}/></div>}</div>}
-      {job.status==='done'&&job.url&&<video src={job.url} controls playsInline preload="metadata" className="export-result-video"/>}
-      <div className="export-actions">{busy?<button className="button secondary" onClick={()=>{abort.current?.abort();setJob(current=>({...current,stage:'正在取消…'}));}}>取消导出</button>:<>{job.status==='done'&&job.url&&<a className="button primary" href={job.url} download={job.fileName}><Icon name="download" size={15}/>下载视频</a>}<button className={`button ${job.status==='done'?'secondary':'primary'}`} disabled={!!prepared.error} onClick={()=>void exportMp4()}><Icon name="download" size={15}/>{job.status==='done'?'重新生成':'生成 MP4'}</button></>}</div>
+      {job.status!=='idle'&&<div className={`export-progress ${job.status==='error'?'notice error':''}`} data-status={job.status} role="status"><span>{job.stage}</span>{busy&&<div className="progress-track" role="progressbar" aria-label="导出进度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(job.progress*100)}><span style={{transform:`scaleX(${job.progress})`}}/></div>}</div>}
+      {job.status==='done'&&job.url&&(job.kind==='gif'?<img src={job.url} alt="签名 GIF 预览" className="export-result-video"/>:<video src={job.url} controls playsInline preload="metadata" className="export-result-video"/>)}
+      <div className="export-actions">{busy?<button className="button secondary" onClick={()=>{abort.current?.abort();setJob(current=>({...current,stage:'正在取消…'}));}}>取消导出</button>:<>{job.status==='done'&&job.url&&<a className="button primary" href={job.url} download={job.fileName}><Icon name="download" size={15}/>{job.kind==='gif'?'下载 GIF':'下载视频'}</a>}<button className={`button ${job.status==='done'?'secondary':'primary'}`} disabled={!!prepared.error} onClick={()=>void exportMp4()}><Icon name="download" size={15}/>{job.status==='done'&&job.kind!=='gif'?'重新生成':'生成 MP4'}</button><button className="button secondary" disabled={!!prepared.error} onClick={()=>void exportGifFile()}><Icon name="download" size={15}/>{job.status==='done'&&job.kind==='gif'?'重新生成 GIF':'生成 GIF'}</button></>}</div>
     </div>}
     </MorphNav>
     <section className="canvas-column" aria-label="作品预览">

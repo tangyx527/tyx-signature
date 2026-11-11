@@ -7,11 +7,12 @@
 | React / React DOM / Scheduler | MIT | [React](public/licenses/React-MIT.txt)、[React DOM 与 Scheduler](public/licenses/React-DOM-MIT.txt) |
 | Zod | MIT | [Zod](public/licenses/Zod-MIT.txt) |
 | Mediabunny 1.56.1 | MPL-2.0 | [Mediabunny](public/licenses/Mediabunny-MPL-2.0.txt) |
+| gifenc 1.0.3 | MIT | [gifenc](public/licenses/gifenc-MIT.txt) |
 | Geist Sans 可变字体（geist 1.9.2） | SIL OFL 1.1 | [Geist](licenses/Geist-OFL-1.1.txt) |
 | Phosphor Icons 2.1.1，regular | MIT | [Phosphor Icons](licenses/Phosphor-Icons-MIT.txt) |
 
 Mediabunny 的对应源码可从 [1.56.1 源码包](https://registry.npmjs.org/mediabunny/-/mediabunny-1.56.1.tgz) 取得，适用 MPL-2.0。
 
-上游来源：[React](https://github.com/facebook/react)、[Zod](https://github.com/colinhacks/zod)、[Mediabunny](https://github.com/Vanilagy/mediabunny)、[Geist](https://github.com/vercel/geist-font)、[Phosphor Icons](https://github.com/phosphor-icons/core)。
+上游来源：[React](https://github.com/facebook/react)、[Zod](https://github.com/colinhacks/zod)、[Mediabunny](https://github.com/Vanilagy/mediabunny)、[gifenc](https://github.com/mattdesl/gifenc)、[Geist](https://github.com/vercel/geist-font)、[Phosphor Icons](https://github.com/phosphor-icons/core)。
 
 网站分发包携带相同的运行时许可和署名。开发工具的许可随对应 npm 包提供。

@@ -17,6 +17,7 @@
     "test": "tsx --test tests/web-*.test.ts tests/config.test.ts tests/motion.test.ts tests/brush.test.ts"
   },
   "dependencies": {
+    "gifenc": "^1.0.3",
     "mediabunny": "1.56.1",
     "react": "19.1.1",
     "react-dom": "19.1.1",

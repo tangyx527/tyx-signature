@@ -20,6 +20,11 @@ Corresponding Source Code Form, available under MPL-2.0:
 https://registry.npmjs.org/mediabunny/-/mediabunny-1.56.1.tgz
 Source: https://github.com/Vanilagy/mediabunny
 
+gifenc 1.0.3 — MIT
+Copyright (c) 2017 Matt DesLauriers
+License: licenses/gifenc-MIT.txt
+Source: https://github.com/mattdesl/gifenc
+
 Geist Sans variable font, geist 1.9.2 — SIL Open Font License 1.1
 Copyright (c) 2023 Vercel, in collaboration with basement.studio
 License: licenses/Geist-OFL-1.1.txt
