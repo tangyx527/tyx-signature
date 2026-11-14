@@ -9,6 +9,7 @@ import {ACTIVE_DECORATION_IDS,decorationCatalog} from '../web/decoration-catalog
 import {referenceDecorationPaths} from '../web/reference-decorations';
 import {pointAt} from '../src/geometry';
 import {introPresets,outroPresets} from '../web/animation-catalog';
+import {defaultGradient,gradientPaint,type GradientConfig} from '../web/gradient';
 
 function fixture():WebConfig{
  const config=defaultWebConfig();config.mode='single';
@@ -31,9 +32,17 @@ class RecordedPath{
  addPath(path:RecordedPath){this.commands.push(...path.commands);}
 }
 type Matrix=[number,number,number,number,number,number];
+class RecordedGradient{
+ stops:{offset:number;color:string}[]=[];
+ endpoints:number[];
+ constructor(x1:number,y1:number,x2:number,y2:number,matrix:Matrix){const [a,b,c,d,e,f]=matrix;this.endpoints=[a*x1+c*y1+e,b*x1+d*y1+f,a*x2+c*y2+e,b*x2+d*y2+f];}
+ addColorStop(offset:number,color:string){this.stops.push({offset,color});}
+ toString(){return 'linear:'+JSON.stringify({endpoints:this.endpoints,stops:this.stops});}
+}
+const recordedColor=(color:string|RecordedGradient)=>String(color);
 type Paint={color:string;alpha:number;shadow:number;matrix:Matrix;commands:Command[]};
 class CanvasRecorder{
- fillStyle='#000000';strokeStyle='#000000';shadowColor='#000000';shadowBlur=0;globalAlpha=1;globalCompositeOperation='source-over';lineWidth=1;lineCap='butt';lineJoin='miter';
+ fillStyle:string|RecordedGradient='#000000';strokeStyle='#000000';shadowColor='#000000';shadowBlur=0;globalAlpha=1;globalCompositeOperation='source-over';lineWidth=1;lineCap='butt';lineJoin='miter';
  matrix:Matrix=[1,0,0,1,0,0];path=new RecordedPath();fills:Paint[]=[];strokes:Paint[]=[];backgrounds:{color:string;args:number[]}[]=[];clears:{args:number[];matrix:Matrix}[]=[];operations:string[]=[];stack:Record<string,unknown>[]=[];
  setTransform(a:number,b:number,c:number,d:number,e:number,f:number){this.matrix=[a,b,c,d,e,f];}
  transform(a:number,b:number,c:number,d:number,e:number,f:number){const [x,y,z,w,u,v]=this.matrix;this.matrix=[x*a+z*b,y*a+w*b,x*c+z*d,y*c+w*d,x*e+z*f+u,y*e+w*f+v];}
@@ -55,11 +64,12 @@ class CanvasRecorder{
   const path=new RecordedPath();path.commands.push(['drawImage',source.width,source.height,...args]);
   this.operations.push('drawImage');this.fills.push(this.paint(path,'rgba-image'));
  }
- paint(path:RecordedPath,color:string):Paint{return {color,alpha:this.globalAlpha,shadow:this.shadowBlur,matrix:[...this.matrix],commands:path.commands.map(command=>[...command])};}
+ createLinearGradient(x1:number,y1:number,x2:number,y2:number){return new RecordedGradient(x1,y1,x2,y2,this.matrix);}
+ paint(path:RecordedPath,color:string|RecordedGradient):Paint{return {color:recordedColor(color),alpha:this.globalAlpha,shadow:this.shadowBlur,matrix:[...this.matrix],commands:path.commands.map(command=>[...command])};}
  fill(path=this.path){this.operations.push('fill');this.fills.push(this.paint(path,this.fillStyle));}
  stroke(){this.operations.push('stroke');this.strokes.push(this.paint(this.path,this.strokeStyle));}
  clearRect(...args:number[]){this.operations.push('clear');this.clears.push({args,matrix:[...this.matrix]});}
- fillRect(...args:number[]){this.operations.push('background');this.backgrounds.push({color:this.fillStyle,args});}
+ fillRect(...args:number[]){this.operations.push('background');this.backgrounds.push({color:recordedColor(this.fillStyle),args});}
 }
 const originalPath=Object.getOwnPropertyDescriptor(globalThis,'Path2D');
 const originalOffscreenCanvas=Object.getOwnPropertyDescriptor(globalThis,'OffscreenCanvas');
@@ -82,6 +92,9 @@ function recording(width=180,height=112){
  return {canvas,context,requests};
 }
 function frameHash(scene:ReturnType<typeof prepareScene>,time:number,complete=false){const {canvas,context}=recording();renderScene(canvas,scene,time,complete);return createHash('sha256').update(JSON.stringify({fills:context.fills,strokes:context.strokes,backgrounds:context.backgrounds,clears:context.clears})).digest('hex');}
+type RecordedGradientData={endpoints:number[];stops:GradientConfig['stops']};
+const gradientData=(color:string):RecordedGradientData|undefined=>color.startsWith('linear:')?JSON.parse(color.slice(7)):undefined;
+const paintedGradients=(context:CanvasRecorder)=>context.fills.flatMap(fill=>{const gradient=gradientData(fill.color);return gradient&&fill.commands.length?[gradient]:[];});
 
 test('unit-scale names fit each artboard; deliberate enlargement warns instead of recentering',()=>{
  for(const aspect of ['landscape','portrait','square'] as const)for(const names of [['A','X'],['TYX','SM'],['M'.repeat(40),'i'],['Liuxin','Tangyanxiang']])for(const mode of ['single','couple'] as const){
@@ -255,5 +268,49 @@ test('new animation frames remain finite, reversible, and independent of the sel
    assert.equal(transparent.context.stack.length,0,'Canvas state remains balanced');
   }
  }
+});
+
+test('typed and traced gradient ink spans the complete signature in ordinary and continuous writing',()=>{
+ for(const signatureSource of ['typed','trace'] as const)for(const enabled of [false,true]){
+  const c=fixture();c.animation.introOutroEnabled=enabled;c.people[0].signatureSource=signatureSource;
+  c.people[0].ink.gradient={enabled:true,angle:135,stops:[{offset:1,color:'#AA33FF'},{offset:0,color:'#FFFFFF'},{offset:.35,color:'#00EEAA'}]};
+  if(signatureSource==='trace')c.people[0].trace={version:1,aspect:16/9,strength:'standard',strokes:[{pointerType:'mouse',join:false,points:[{x:.1,y:.2,t:0},{x:.35,y:.7,t:200},{x:.55,y:.15,t:400},{x:.9,y:.55,t:600}]}]};
+  const scene=prepareScene(c),group=scene.people[0],a=recording(),b=recording();renderScene(a.canvas,scene,group.plan.writing.start+(group.plan.writing.end-group.plan.writing.start)*.53);renderScene(b.canvas,scene,scene.duration,true);
+  const active=paintedGradients(a.context),complete=paintedGradients(b.context);assert.ok(active.length&&complete.length,`${signatureSource}/${enabled}`);
+  const expected=gradientPaint(c.people[0].ink.gradient,group.brush.box,p=>({x:(p.x*Math.cos(group.angle)-p.y*Math.sin(group.angle))*group.scale+group.tx,y:(p.x*Math.sin(group.angle)+p.y*Math.cos(group.angle))*group.scale+group.ty}));
+  const endpoints=[expected.from.x,expected.from.y,expected.to.x,expected.to.y];
+  for(const data of [...active,...complete]){assert.deepEqual(data.stops,expected.stops);data.endpoints.forEach((value,index)=>close(value,endpoints[index]));}
+  const time=group.plan.writing.start+(group.plan.writing.end-group.plan.writing.start)*.61,hash=frameHash(scene,time);for(const at of [scene.duration,.1,scene.editingTime])frameHash(scene,at);assert.equal(frameHash(scene,time),hash);
+ }
+});
+
+test('two gradients remain independent while authored colored ornaments keep their original paint',()=>{
+ const c=fixture();c.mode='couple';c.people[0].ink.gradient=defaultGradient('#FFFFFF');c.people[1].ink.gradient={enabled:true,angle:180,stops:[{offset:0,color:'#FF1122'},{offset:1,color:'#2233FF'}]};c.people[0].decoration.id='panda-face';
+ const scene=prepareScene(c),r=recording();renderScene(r.canvas,scene,scene.duration,true);const gradients=paintedGradients(r.context);
+ for(const person of c.people)assert.ok(gradients.some(paint=>JSON.stringify(paint.stops)===JSON.stringify(person.ink.gradient!.stops)));
+ for(const color of new Set((referenceDecorationPaths['panda-face']??[]).map(stroke=>stroke.color).filter(Boolean)))assert.ok(r.context.fills.some(fill=>fill.color.toLowerCase()===color!.toLowerCase()),color);
+});
+
+test('classic and vortex endings retain the incoming gradient through contraction before their own palette takes over',()=>{
+ for(const outro of ['classic','vortex'] as const){
+  const c=fixture();c.animation.outro=outro;c.people[0].ink.gradient=defaultGradient('#EFAB33');const scene=prepareScene(c),start=scene.duration-1.5;
+  const before=recording(),begin=recording(),contract=recording();renderScene(before.canvas,scene,start-1e-6);renderScene(begin.canvas,scene,start+1e-6);renderScene(contract.canvas,scene,start+.12);
+  const prior=paintedGradients(before.context),next=paintedGradients(begin.context),moving=paintedGradients(contract.context);assert.ok(prior.length&&next.length&&moving.length,outro);
+  assert.deepEqual(prior[0].stops,next[0].stops);assert.deepEqual(moving[0].stops,c.people[0].ink.gradient.stops);
+  for(const time of [start+.24,start+.33,start+.65]){const hash=frameHash(scene,time);frameHash(scene,0);frameHash(scene,scene.duration);assert.equal(frameHash(scene,time),hash);}
+  const end=recording();renderScene(end.canvas,scene,scene.duration);assert.equal(end.context.fills.length,0);
+ }
+});
+
+test('background gradient fills the whole artboard at every phase and transparency omits it without changing ink',()=>{
+ for(const aspect of ['landscape','portrait','square'] as const){
+  const c=fixture();c.canvas.aspect=aspect;c.canvas.gradient={enabled:true,angle:45,stops:[{offset:1,color:'#123456'},{offset:0,color:'#ABCDEF'}]};c.people[0].ink.gradient=defaultGradient('#F5FFFD');const opaque=prepareScene(c);c.canvas.transparent=true;const transparent=prepareScene(c);
+  for(const time of [0,.9,opaque.editingTime,opaque.duration-.2,opaque.duration]){
+   const a=recording(),b=recording();renderScene(a.canvas,opaque,time);renderScene(b.canvas,transparent,time);assert.equal(a.context.backgrounds.length,1);assert.equal(b.context.backgrounds.length,0);assert.deepEqual(a.context.fills,b.context.fills);assert.deepEqual(a.context.strokes,b.context.strokes);
+   const data=gradientData(a.context.backgrounds[0].color)!;assert.ok(data);const expected=gradientPaint(c.canvas.gradient,{minX:0,minY:0,maxX:opaque.width,maxY:opaque.height});assert.deepEqual(data.endpoints,[expected.from.x,expected.from.y,expected.to.x,expected.to.y]);assert.deepEqual(a.context.backgrounds[0].args,[0,0,opaque.width,opaque.height]);
+  }
+  const a=recording(),b=recording();renderScene(a.canvas,opaque,0,true);renderScene(b.canvas,transparent,0,true);assert.deepEqual(a.context.fills,b.context.fills);assert.equal(b.context.backgrounds.length,0);
+ }
+ const c=fixture(),r=recording();c.canvas.gradient=defaultGradient('#111111');renderDecorationThumbnail(r.canvas,'panda-face',c.people[0],c.canvas.background,false,c.canvas.gradient);assert.ok(gradientData(r.context.backgrounds[0].color));renderDecorationThumbnail(r.canvas,'panda-face',c.people[0],c.canvas.background,true,c.canvas.gradient);assert.equal(r.context.backgrounds.length,1);
 });
 

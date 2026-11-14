@@ -4,12 +4,15 @@ import {canvasSize,clamp,defaultWebConfig,loadConfig,parseConfigFile,saveConfig,
 import {prepareScene,renderScene,type PreparedScene} from './renderer';
 import {Preview,type AnimationPreviewRequest} from './Preview';
 import {Details,Icon,Range,Toggle,UtilityMenu} from './ui';
-import {SignatureColorField} from './SignatureColorField';
+import {PaintField} from './PaintField';
+import {gradientCss} from './gradient';
 import {TraceEditor} from './TraceEditor';
 import type {TraceData} from './tracing';
 import {MorphNav} from './MorphNav';
 import {DecorationThumbnail} from './DecorationThumbnail';
 import {AnimationPicker} from './AnimationPicker';
+import {Onboarding,type OnboardingState,type OnboardingStep} from './Onboarding';
+import {markOnboarding,readOnboarding} from './onboarding-state';
 import {ThemeSelector} from './ThemeSelector';
 import {usePressRipple} from './usePressRipple';
 import {useEditorHistory} from './useEditorHistory';
@@ -55,6 +58,11 @@ function App(){
   const [exportOpen,setExportOpen]=useState(false);
   const [traceTarget,setTraceTarget]=useState<0|1|null>(null);
   const exportDialog=useRef<HTMLDialogElement>(null);
+  const tourExportHost=useRef<HTMLDivElement>(null);
+  const [onboarding,setOnboarding]=useState<OnboardingState>(()=>{
+    try{return {status:readOnboarding(window.localStorage)?'closed':'invite',step:0};}
+    catch{return {status:'invite',step:0};}
+  });
   const [notice,setNotice]=useState(initial.warning??''),[saved,setSaved]=useState('已保存');
   const [audioUrl,setAudioUrl]=useState<string>(),[audioDuration,setAudioDuration]=useState(0);
   const [job,setJob]=useState<Job>(idle),[pauseToken,setPauseToken]=useState(0),[completeToken,setCompleteToken]=useState(0);
@@ -70,6 +78,31 @@ function App(){
   const scene=prepared.scene??lastGood.current,person=config.people[selected];
   const motionSelection=resolveMotionSelection(config.animation);
   const busy=job.status==='checking'||job.status==='working';
+  const rememberOnboarding=(status:'started'|'dismissed'|'completed')=>{
+    try{markOnboarding(window.localStorage,status);}catch{/* Teaching remains optional when browser storage is unavailable. */}
+  };
+  const locateOnboarding=(step:OnboardingStep)=>{
+    setPauseToken(value=>value+1);setCompleteToken(value=>value+1);setMotionPreview(undefined);audition.current?.pause();
+    if(step===3){setExportOpen(true);return;}
+    setExportOpen(false);openPanel(step===0?'signature':step===1?'decoration':'animation');
+  };
+  const startOnboarding=()=>{
+    if(busy)return;
+    rememberOnboarding('started');setOnboarding({status:'active',step:0});locateOnboarding(0);
+  };
+  const changeOnboardingStep=(step:OnboardingStep)=>{
+    if(busy)return;
+    setOnboarding({status:'active',step});locateOnboarding(step);
+  };
+  const dismissOnboarding=()=>{
+    rememberOnboarding('dismissed');setOnboarding(current=>({...current,status:'closed'}));
+    if(!exportOpen&&traceTarget===null)requestAnimationFrame(()=>document.getElementById('editor-tab-'+tab)?.focus({preventScroll:true}));
+  };
+  const finishOnboarding=()=>{
+    rememberOnboarding('completed');setOnboarding(current=>({...current,status:'closed'}));
+    if(!busy){setExportOpen(false);requestAnimationFrame(()=>document.getElementById('editor-tab-'+tab)?.focus({preventScroll:true}));}
+    setNotice('引导已完成，可以继续自由创作；“更多操作”中可重新查看。');
+  };
   const travel=(direction:'undo'|'redo')=>{
     if(busy)return;
     (direction==='undo'?undo:redo)();setPauseToken(value=>value+1);setCompleteToken(value=>value+1);
@@ -115,7 +148,7 @@ function App(){
   useEffect(()=>{
     const shortcut=(event:KeyboardEvent)=>{
       if(busy||event.defaultPrevented||event.isComposing||event.altKey||!(event.ctrlKey||event.metaKey)||document.querySelector('dialog[open]'))return;
-      if(event.target instanceof Element&&event.target.closest('input,textarea,select,[contenteditable="true"]'))return;
+      if(event.target instanceof Element&&event.target.closest('input,textarea,select,[contenteditable="true"],[data-editor-shortcuts="off"]'))return;
       const key=event.key.toLowerCase();
       if(key==='z'){event.preventDefault();(event.shiftKey?redo:undo)();}
       else if(key==='y'&&!event.shiftKey){event.preventDefault();redo();}
@@ -215,7 +248,7 @@ function App(){
   const outputSize=format==='gif'?{width:Math.round(ratio.width*gifScale),height:Math.round(ratio.height*gifScale)}:ratio;
   const personPicker=config.mode==='couple'&&<div className="person-tabs" role="group" aria-label="编辑哪一组签名">
     {([0,1] as const).map(index=><button key={index} className={['person-tab',selected===index?'active':''].join(' ')} aria-pressed={selected===index} onClick={()=>setSelected(index)}>
-      <span className="person-dot" style={{background:config.people[index].ink.color,borderColor:config.people[index].glow.color}}/>
+      <span className="person-dot" style={{background:config.people[index].ink.gradient?.enabled?gradientCss(config.people[index].ink.gradient):config.people[index].ink.color,borderColor:config.people[index].glow.color}}/>
       {index===0?'第一位':'第二位'}
     </button>)}
   </div>;
@@ -236,18 +269,19 @@ function App(){
           <button type="button" className="icon-button" aria-label="重做" title="重做 · Ctrl / ⌘ Shift Z" aria-keyshortcuts="Control+Shift+Z Meta+Shift+Z Control+Y" disabled={busy||!canRedo} onClick={()=>travel('redo')}><span className="redo-icon"><Icon name="replay" size={19}/></span></button>
         </div>
         <span className="save-state" role="status" aria-label={saved==='已保存'?'已保存到此浏览器':saved} title={saved==='已保存'?'已保存到此浏览器':saved}><span className={['save-dot',prepared.error?'is-unsaved':''].join(' ')} aria-hidden="true"/><span className="save-state-label">{saved}</span></span>
-        <button className="button primary header-export-button" onClick={()=>setExportOpen(true)}><Icon name="download" size={17}/>{busy?'正在导出':'导出视频'}</button>
+        <button className="button primary header-export-button" data-tour="export-button" onClick={()=>setExportOpen(true)}><Icon name="download" size={17}/>{busy?'正在导出':'导出视频'}</button>
       </div>
     </header>
     <main className="workspace" data-sidebar-collapsed={sidebarCollapsed} id="signature-workspace" tabIndex={-1}>
       <MorphNav active={tab} onActiveChange={openPanel} collapsed={sidebarCollapsed} onCollapsedChange={setSidebarCollapsed} busy={busy} footer={<><UtilityMenu>
+        <button disabled={busy} onClick={startOnboarding}><Icon name="play" size={15}/>教学引导</button>
         <button disabled={busy||!!prepared.error} onClick={()=>downloadText(JSON.stringify(validateConfig(config),null,2),'tyx-signature.json')}><Icon name="file" size={15}/>下载配置</button>
         <button disabled={busy} onClick={()=>importInput.current?.click()}><Icon name="upload" size={15}/>导入配置</button>
         <button disabled={busy} onClick={reset}><Icon name="reset" size={15}/>重置设计</button>
       </UtilityMenu><ThemeSelector/></>}>
         <fieldset className="inspector-fields" disabled={busy} aria-label={tab==='signature'?'签名设置':tab==='decoration'?'装饰设置':tab==='animation'?'动画设置':'画面设置'}>
           {tab==='signature'&&<div className="inspector-cards">
-            <section className="inspector-group signature-content" aria-labelledby="signature-content-title">
+            <section className="inspector-group signature-content" data-tour="signature-content" aria-labelledby="signature-content-title">
               <h2 className="section-heading" id="signature-content-title">签名内容</h2>
               <div className="mode-switch" role="group" aria-label="签名模式">
                 {(['single','couple'] as const).map(mode=><button className="mode-option" key={mode} aria-pressed={config.mode===mode} onClick={()=>{update(next=>{next.mode=mode;});if(mode==='single')setSelected(0);}}>{mode==='single'?'单人':'双人'}</button>)}
@@ -260,7 +294,7 @@ function App(){
                     <div className="name-label"><label htmlFor={'signature-name-'+index}>{title}</label>{selected===index&&<span className="editing-badge">正在编辑</span>}</div>
                     <div className="name-input-shell" onClick={()=>setSelected(index)}>
                       <input id={'signature-name-'+index} className="name-input" aria-label={config.mode==='couple'?title+'姓名':'签名姓名'} aria-invalid={invalid} aria-describedby={invalid?'signature-name-error-'+index:undefined} value={editingPerson.name} maxLength={40} placeholder={editingPerson.signatureSource==='trace'?'称呼（可选）':'英文名字或拼音'} spellCheck={false} autoComplete="off" onFocus={()=>setSelected(index)} onChange={event=>update(next=>{next.people[index].name=event.target.value;})}/>
-                      <span className="name-color-dot" aria-hidden="true" style={{background:editingPerson.ink.color}}/>
+                      <span className="name-color-dot" aria-hidden="true" style={{background:editingPerson.ink.gradient?.enabled?gradientCss(editingPerson.ink.gradient):editingPerson.ink.color}}/>
                     </div>
                     {invalid&&<p className="field-error" id={'signature-name-error-'+index}>请输入英文字母或拼音，可保留空格、撇号和连字符。</p>}
                   </div>;
@@ -277,7 +311,7 @@ function App(){
                 </div>
                 {person.signatureSource==='trace'&&<button type="button" className="button secondary small trace-reedit" onClick={openTrace}><Icon name="pen" size={15}/>继续描摹 / 调整美化</button>}
               </div>
-              <SignatureColorField editingKey={selected} value={person.ink.color} onEditCommit={endGesture} onChange={value=>changePerson(next=>{next.ink.color=value;next.glow.color=value;})}/>
+              <PaintField title="签名颜色" editingKey={selected} value={person.ink.color} gradient={person.ink.gradient} onEditCommit={endGesture} onChange={value=>changePerson(next=>{next.ink.color=value;next.glow.color=value;})} onGradientChange={gradient=>changePerson(next=>{next.ink.gradient=gradient;})}/>
               <div className="signature-style-controls" key={'signature-style-'+selected}>
                 <Range title="签名大小" value={person.position.scale} min={.45} max={3} step={.05} suffix="×" onChange={value=>changePerson(next=>{next.position.scale=value;})}/>
                 <Range title="笔迹粗细" value={person.font.penWidth} min={.5} max={2} step={.05} suffix="×" onChange={value=>changePerson(next=>{next.font.penWidth=value;})}/>
@@ -299,7 +333,7 @@ function App(){
                 <Range title="装饰垂直位置" value={person.decoration.offsetY*100} min={-45} max={45} step={.5} suffix="%" displayDecimals={2} onChange={value=>changePerson(next=>{next.decoration.offsetY=value/100;})}/>
               </div></Details>}
               <div className="decoration-categories" role="group" aria-label="装饰分类">{decorationCategories.map(category=><button type="button" className="decoration-category" key={category.id} aria-pressed={decorationCategory===category.id} onClick={()=>setDecorationCategory(category.id)}>{category.label}</button>)}</div>
-              <div className="decoration-grid" role="group" aria-label={decorationCategories.find(category=>category.id===decorationCategory)?.label+'图案'}>{decorationCatalog.filter(item=>item.category===decorationCategory).map(item=><button type="button" key={item.id} className={['decoration-choice',person.decoration.id===item.id?'selected':''].join(' ')} aria-pressed={person.decoration.id===item.id} onClick={()=>changePerson(next=>{next.decoration.id=item.id;})}><DecorationThumbnail id={item.id} person={person} background={config.canvas.background} transparent={config.canvas.transparent}/><span>{item.label}</span></button>)}</div>
+              <div className="decoration-grid" role="group" aria-label={decorationCategories.find(category=>category.id===decorationCategory)?.label+'图案'}>{decorationCatalog.filter(item=>item.category===decorationCategory).map((item,index)=><button type="button" key={item.id} data-tour={index===0?'decoration-library':undefined} className={['decoration-choice',person.decoration.id===item.id?'selected':''].join(' ')} aria-pressed={person.decoration.id===item.id} onClick={()=>changePerson(next=>{next.decoration.id=item.id;})}><DecorationThumbnail id={item.id} person={person} background={config.canvas.background} backgroundGradient={config.canvas.gradient} transparent={config.canvas.transparent}/><span>{item.label}</span></button>)}</div>
               <p className="export-note">点击画布中的装饰即可拖动；选中后也可用方向键微调位置。</p>
             </section>
           </div>}
@@ -310,7 +344,7 @@ function App(){
               <div className="format-switch" role="group" aria-label="画面比例">
                 {([['landscape','横屏','16:9'],['portrait','竖屏','9:16'],['square','方形','1:1']] as const).map(([id,label,size])=><button type="button" className="format-option" key={id} aria-pressed={config.canvas.aspect===id} onClick={()=>update(next=>{next.canvas.aspect=id;})}>{label}<small>{size}</small></button>)}
               </div>
-              <SignatureColorField title="背景" value={config.canvas.background} onEditCommit={endGesture} onChange={value=>update(next=>{next.canvas.background=value;})}/>
+              <PaintField title="背景" value={config.canvas.background} gradient={config.canvas.gradient} onEditCommit={endGesture} onChange={value=>update(next=>{next.canvas.background=value;})} onGradientChange={gradient=>update(next=>{next.canvas.gradient=gradient;})}/>
               <Toggle title="透明背景" checked={config.canvas.transparent} onChange={value=>{update(next=>{next.canvas.transparent=value;});if(value)setFormat('gif');}}/>
               {config.canvas.transparent&&<p className="export-note">已使用透明背景，导出格式为 GIF。</p>}
             </section>
@@ -352,6 +386,7 @@ function App(){
     <dialog className="export-dialog" ref={exportDialog} aria-labelledby="export-dialog-title" onCancel={event=>{if(busy)event.preventDefault();else setExportOpen(false);}} onClose={()=>{setExportOpen(false);audition.current?.pause();}}>
       <header className="export-dialog-header"><h2 id="export-dialog-title">导出设置</h2><button className="icon-button" aria-label="关闭导出设置" disabled={busy} onClick={()=>setExportOpen(false)}><Icon name="close" size={18}/></button></header>
       <div className="export-dialog-body">
+        <div ref={tourExportHost}/>
         <fieldset className="inspector-fields" disabled={busy} aria-label="导出设置"><div className="inspector-cards">
 
             <section className="inspector-group">
@@ -360,7 +395,7 @@ function App(){
                 <button type="button" className="output-choice" aria-pressed={format==='mp4'} disabled={config.canvas.transparent} title={config.canvas.transparent?'透明背景请使用 GIF；关闭透明背景后可选择 MP4':'普通视频，可选配乐'} onClick={()=>setFormat('mp4')}>MP4<small>视频</small></button>
                 <button type="button" className="output-choice" aria-pressed={format==='gif'} onClick={()=>setFormat('gif')}>GIF<small>动图</small></button>
               </div>
-              <p className="export-note">{format==='gif'?(config.canvas.transparent?'透明动图，可叠加使用；GIF 不包含音频。':'循环动图，使用当前背景色；GIF 不包含音频。'):'普通视频，支持配乐。时长和帧率在“动画”中调整，比例和背景在“画面”中调整。'}</p>
+              <p className="export-note">{format==='gif'?(config.canvas.transparent?'透明动图，可叠加使用；GIF 不包含音频。':'循环动图，使用当前背景；GIF 不包含音频。'):'普通视频，支持配乐。时长和帧率在“动画”中调整，比例和背景在“画面”中调整。'}</p>
               <div className="export-inline-summary">{format.toUpperCase()} · {outputSize.width} × {outputSize.height} · {format==='gif'?20:config.canvas.fps} 帧/秒</div>
             </section>
             {format==='mp4'&&<section className="inspector-group">
@@ -382,13 +417,14 @@ function App(){
         </div>
       </div>
     </dialog>
-    <TraceEditor open={traceTarget!==null} initialTrace={config.people[traceTarget??selected].trace} inkColor={config.people[traceTarget??selected].ink.color} penWidth={config.people[traceTarget??selected].font.penWidth} duration={config.timing.duration} renderPreview={renderTracePreview} onClose={()=>setTraceTarget(null)} onApply={trace=>{
+    <TraceEditor open={traceTarget!==null} initialTrace={config.people[traceTarget??selected].trace} inkColor={config.people[traceTarget??selected].ink.color} inkGradient={config.people[traceTarget??selected].ink.gradient} penWidth={config.people[traceTarget??selected].font.penWidth} duration={config.timing.duration} renderPreview={renderTracePreview} onClose={()=>setTraceTarget(null)} onApply={trace=>{
       if(traceTarget===null)return;
       const target=traceTarget;
       update(next=>{next.people[target].signatureSource='trace';next.people[target].trace=trace;next.people[target].position.rotation=0;});
       setSelected(target);setCompleteToken(value=>value+1);setTraceTarget(null);
     }}/>
     <input className="sr-only" ref={importInput} type="file" accept="application/json,.json" aria-label="导入签名配置文件" onChange={event=>void importFile(event.target.files?.[0])}/>
+    <Onboarding state={onboarding} onStart={startOnboarding} onDismiss={dismissOnboarding} onStepChange={changeOnboardingStep} onFinish={finishOnboarding} onLocateStep={()=>locateOnboarding(onboarding.step)} exportHost={exportOpen?tourExportHost.current:null} paused={traceTarget!==null||busy||(exportOpen&&!(onboarding.status==='active'&&onboarding.step===3))}/>
   </div>;
 }
 createRoot(document.getElementById('root')!).render(<App/>);

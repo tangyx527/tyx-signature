@@ -34,6 +34,6 @@ export function AnimationThumbnail({kind,preset,config}:{kind:AnimationThumbnail
     },{rootMargin:'80px'});
     observer.observe(target);
     return ()=>{observer.disconnect();cancel?.();};
-  },[kind,preset,intro,person.name,person.signatureSource,person.trace,person.ink.color,person.font.penWidth,person.glow.enabled,person.glow.color,person.glow.strength,person.glow.radius]);
+  },[kind,preset,intro,person.name,person.signatureSource,person.trace,person.ink.color,person.ink.gradient,person.font.penWidth,person.glow.enabled,person.glow.color,person.glow.strength,person.glow.radius]);
   return <canvas className="animation-thumbnail" ref={canvas} width={220} height={156} aria-hidden="true"/>;
 }

@@ -22,7 +22,7 @@ export function AnimationPicker<Id extends IntroPreset|OutroPreset>({kind,preset
   return <section className="animation-picker" aria-labelledby={heading}>
     <div className="animation-picker-heading"><h3 className="section-heading" id={heading}>{title}</h3><span className="animation-picker-current">{selected?.label}</span></div>
     <div className="animation-grid" id={grid} role="group" aria-label={title} aria-describedby={description}>
-      {visible.map(preset=><button type="button" key={preset.id} className="animation-choice" aria-pressed={value===preset.id} title={preset.description} onClick={()=>onChoose(preset.id)}>
+      {visible.map((preset,index)=><button type="button" key={preset.id} data-tour={kind==='intro'&&index===0?'animation-picker':undefined} className="animation-choice" aria-pressed={value===preset.id} title={preset.description} onClick={()=>onChoose(preset.id)}>
         <AnimationThumbnail kind={kind} preset={preset.id} config={config}/>
         <span className="animation-choice-name">{preset.label}</span>
         {value===preset.id&&<span className="animation-choice-check" aria-hidden="true"><Icon name="check" size={12}/></span>}

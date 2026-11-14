@@ -1,5 +1,6 @@
 import {appendCapsules,type InkSample} from './brush-engine';
 import type {MotionGeometry,VariantInk} from './motion-variants';
+import {canvasGradient,blendGradient,type LinearGradientPaint} from './gradient';
 
 export type RibbonSample=InkSample&{z:number;left?:{x:number;y:number};right?:{x:number;y:number}};
 export type AuthoredRibbon={id:number;color:string;samples:readonly RibbonSample[];weight:number;shade?:number};
@@ -18,7 +19,7 @@ export function appendRibbonPath(path:Path2D,ribbon:AuthoredRibbon):void{
 
 type Allocation={ribbon:AuthoredRibbon;start:number;end:number};
 type Cut={distance:number;before:number;after:number;local:number};
-type Paint={path:Path2D;color:string;glowColor:string;glowStrength:number;glowRadius:number;depth:number;count:number};
+type Paint={path:Path2D;color:string;gradient?:LinearGradientPaint;glowColor:string;glowStrength:number;glowRadius:number;depth:number;count:number};
 const clamp=(n:number)=>Math.max(0,Math.min(1,n));
 const ease=(n:number)=>{const u=clamp(n);return u*u*(3-2*u);};
 const lerp=(a:number,b:number,t:number)=>a+(b-a)*t;
@@ -31,7 +32,7 @@ function paint(ctx:CanvasRenderingContext2D,entry:Paint):void{
   ctx.fillStyle=entry.glowColor;ctx.shadowColor=entry.glowColor;ctx.shadowBlur=entry.glowRadius;ctx.globalAlpha=alpha*entry.glowStrength*.43;ctx.fill(entry.path);
   ctx.shadowBlur=entry.glowRadius*.25;ctx.globalAlpha=alpha*entry.glowStrength*.19;ctx.fill(entry.path);
  }
- ctx.shadowBlur=0;ctx.globalAlpha=alpha;ctx.fillStyle=entry.color;ctx.fill(entry.path);ctx.restore();
+ ctx.shadowBlur=0;ctx.globalAlpha=alpha;ctx.fillStyle=entry.gradient?canvasGradient(ctx,entry.gradient):entry.color;ctx.fill(entry.path);ctx.restore();
 }
 
 /** Global source arc intervals become weighted, consecutive parts of the target ribbons. */
@@ -42,9 +43,9 @@ export function drawInkRibbonHandoff(ctx:CanvasRenderingContext2D,inks:readonly 
  let weightCursor=0;
  const allocations:Allocation[]=active.map((ribbon,index)=>{const start=weightCursor/weightTotal;weightCursor+=weights[index];return {ribbon,start,end:index===active.length-1?1:weightCursor/weightTotal};});
  const paints=new Map<string,Paint>();
- const sourcePaint=(ink:VariantInk,key:string,color:string,depth=0):Paint=>{
+ const sourcePaint=(ink:VariantInk,key:string,color:string,depth=0,gradientTarget=color):Paint=>{
   let entry=paints.get(key);
-  if(!entry){entry={path:new Path2D(),color,glowColor:ink.glowColor,glowStrength:ink.glowStrength*(1-morph),glowRadius:ink.glowRadius*scale*(1-morph),depth:0,count:0};paints.set(key,entry);}
+  if(!entry){entry={path:new Path2D(),color,gradient:ink.gradient?blendGradient(ink.gradient,gradientTarget,morph,point=>({x:geometry.center.x+(point.x-geometry.center.x)*scale+(point.y-geometry.center.y)*scale*.18*pull,y:geometry.center.y+(point.y-geometry.center.y)*scale*flatten})):undefined,glowColor:ink.glowColor,glowStrength:ink.glowStrength*(1-morph),glowRadius:ink.glowRadius*scale*(1-morph),depth:0,count:0};paints.set(key,entry);}
   entry.depth+=depth;entry.count++;return entry;
  };
  const pull=ease((progress-.10)/.12),flatten=1-.68*pull;
@@ -103,7 +104,7 @@ export function drawInkRibbonHandoff(ctx:CanvasRenderingContext2D,inks:readonly 
   };
   const append=(ink:VariantInk,index:number,samples:readonly ProjectedSample[])=>{
    if(!samples.length)return;
-   const ribbon=allocations[index].ribbon,entry=sourcePaint(ink,ribbon.id+'/'+ink.paintKey,mix(ink.color,ribbonFaceColor(ribbon),morph),samples.reduce((sum,sample)=>sum+sample.z,0)/samples.length);
+   const ribbon=allocations[index].ribbon,entry=sourcePaint(ink,ribbon.id+'/'+ink.paintKey,mix(ink.color,ribbonFaceColor(ribbon),morph),samples.reduce((sum,sample)=>sum+sample.z,0)/samples.length,ribbonFaceColor(ribbon));
    if(samples.every(sample=>sample.left&&sample.right)){
     for(let k=1;k<samples.length;k++){
      const a=samples[k-1],b=samples[k],al=a.left!,ar=a.right!,bl=b.left!,br=b.right!;

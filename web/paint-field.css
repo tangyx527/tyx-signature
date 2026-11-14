@@ -1,0 +1,27 @@
+.paint-field{display:grid;gap:12px;min-width:0}
+.paint-field>.signature-color-field>.color-field>.color-row>label{position:absolute;width:1px;height:1px;padding:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+.paint-field>.signature-color-field>.color-field>.color-row>.color-hex{flex:1;width:auto}
+.paint-mode-header{display:flex;align-items:center;justify-content:space-between;gap:12px;min-width:0}
+.paint-mode-title{color:var(--ink);font:500 12px/20px var(--font-ui)}
+.paint-mode-switch{display:flex;gap:2px;padding:3px;border-radius:7px;background:var(--field)}
+.paint-mode-option{min-width:52px;min-height:29px;padding:4px 10px;border-radius:5px;color:var(--muted);font:500 11px/17px var(--font-ui)}
+.paint-mode-option[aria-pressed='true']{color:var(--accent-ink);background:var(--glass-selected);box-shadow:var(--glass-control-shadow)}
+.paint-mode-option:hover,.paint-directions button:hover{color:var(--accent-ink)}
+.paint-gradient-editor{display:grid;gap:11px;min-width:0}
+.paint-gradient-preview{height:46px;border:1px solid var(--line);border-radius:8px;box-shadow:inset 0 0 0 1px rgba(255,255,255,.12)}
+.paint-stops-header,.paint-direction-heading{display:flex;align-items:center;justify-content:space-between;gap:10px;color:var(--muted);font:11px/18px var(--font-ui)}
+.paint-stops-header{margin-bottom:-6px}.paint-stops-header>span:last-child{color:var(--faint);font-variant-numeric:tabular-nums}
+.paint-stops{display:flex;align-items:stretch;gap:5px;min-width:0}
+.paint-stop{display:grid;flex:1;justify-items:center;gap:4px;min-width:0;padding:5px 2px 4px;border:1px solid transparent;border-radius:6px;color:var(--muted);font:10px/15px var(--font-ui);font-variant-numeric:tabular-nums}
+.paint-stop:hover{background:var(--surface)}
+.paint-stop[aria-pressed='true']{border-color:var(--accent);color:var(--accent-ink);background:var(--accent-wash)}
+.paint-stop-chip{display:block;width:25px;height:25px;border:1px solid var(--line);border-radius:5px;box-shadow:inset 0 0 0 1px rgba(255,255,255,.2);pointer-events:none}
+.paint-add-stop{align-self:start;display:grid;place-items:center;flex-shrink:0;width:30px;height:35px;margin-top:3px;border:1px dashed var(--line);border-radius:6px;color:var(--muted);font:20px/24px var(--font-ui)}
+.paint-add-stop:hover{border-color:var(--accent);color:var(--accent-ink);background:var(--accent-wash)}
+.paint-stop-editor{display:grid;gap:8px;min-width:0;padding:10px;border:1px solid var(--line-soft);border-radius:7px;background:var(--surface)}
+.paint-field .paint-stop-editor .color-row>label{font-size:10px;line-height:15px}.paint-field .paint-stop-editor .color-hex{width:85px;height:32px;min-height:32px;padding:5px 6px;font-size:11px}.paint-field .paint-stop-editor .color-row{gap:6px}.paint-field .paint-stop-editor .color-swatch{width:26px;height:26px}
+.paint-stop-position{display:grid;gap:0;min-width:0}.paint-stop-position .range-title{font-size:10px}.paint-stop-position .range-control{height:31px}.paint-stop-position .range-control input[type='range']{height:31px}
+.paint-remove-stop{justify-self:end;min-height:24px;padding:2px 0;color:var(--muted);font:10px/16px var(--font-ui);text-decoration:underline;text-underline-offset:3px}.paint-remove-stop:hover:not(:disabled){color:var(--accent-ink)}.paint-remove-stop:disabled{opacity:.35;text-decoration:none}
+.paint-directions{display:flex;gap:4px}.paint-directions button{display:grid;place-items:center;width:29px;height:28px;border:1px solid var(--line-soft);border-radius:5px;color:var(--muted);background:var(--paper);font:16px/20px var(--font-ui)}.paint-directions button[aria-pressed='true']{border-color:var(--accent);color:var(--accent-ink);background:var(--accent-wash)}
+.paint-field button:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+@media(forced-colors:active){.paint-mode-option[aria-pressed='true'],.paint-stop[aria-pressed='true'],.paint-directions button[aria-pressed='true']{outline:1px solid Highlight}.paint-field button:focus-visible{outline-color:Highlight}.paint-stop-chip,.paint-gradient-preview{forced-color-adjust:none}}

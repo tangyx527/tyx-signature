@@ -9,9 +9,10 @@ import {isOrnatePreset,type OrnateLayout,type OrnateClock} from './ornate-types'
 import {drawOrnateBackdrop,drawOrnateForeground,type OrnatePen} from './ornate-motion';
 import {outroThemeColors} from './motion-palette';
 import {drawClassicEntryParticle} from './entry-particle-artwork';
+import {canvasGradient,gradientPaint,blendGradient,type GradientConfig,type LinearGradientPaint} from './gradient';
 
 type Phase={start:number;end:number};
-export type ContinuousGroup={index:0|1;brush:PreparedBrush;scale:number;angle:number;tx:number;ty:number;center:Point;plan:{writing:Phase;outro:Phase};config:{font:{penWidth:number;pressure:number};ink:{color:string};glow:{enabled:boolean;color:string;strength:number;radius:number}};particles?:boolean;radiusAt?:(stroke:PreparedStroke,u:number)=>number;colorAt?:(stroke:PreparedStroke)=>string|undefined;deformPoint?:(id:string,p:Point,time:number)=>Point;deformRadius?:(id:string,time:number)=>number;deformPhase?:Phase};
+export type ContinuousGroup={index:0|1;brush:PreparedBrush;scale:number;angle:number;tx:number;ty:number;center:Point;plan:{writing:Phase;outro:Phase};config:{font:{penWidth:number;pressure:number};ink:{color:string;gradient?:GradientConfig};glow:{enabled:boolean;color:string;strength:number;radius:number}};particles?:boolean;radiusAt?:(stroke:PreparedStroke,u:number)=>number;colorAt?:(stroke:PreparedStroke)=>string|undefined;deformPoint?:(id:string,p:Point,time:number)=>Point;deformRadius?:(id:string,time:number)=>number;deformPhase?:Phase};
 type Vertex=InkSample&{strokeU:number;targetU:number};
 type InkChunk={id:number;group:ContinuousGroup;stroke:PreparedStroke;from:number;to:number;part:number;vertices:Vertex[];fullPath?:Path2D};
 type RibbonKey={frame:number;center:Point;centerline:Point[];widths:number[];opacity:number};
@@ -142,10 +143,15 @@ function handoffScale(frame:number):number{
  const keys=[{frame:150,scale:1},{frame:155,scale:1.109},{frame:156,scale:1.12},{frame:158,scale:1.08},{frame:159,scale:1.052},{frame:160,scale:.884},{frame:161,scale:.363},{frame:162,scale:.22}],{a,b,u}=bracket(keys,frame);
  return lerp(a.scale,b.scale,ease(u));
 }
-function fillPath(context:CanvasRenderingContext2D,path:Path2D,color:string,glowColor:string,strength:number,radius:number,opacity=1):void{
+function fillPath(context:CanvasRenderingContext2D,path:Path2D,color:string,glowColor:string,strength:number,radius:number,opacity=1,gradient?:LinearGradientPaint):void{
  context.save();context.globalAlpha=opacity;
  if(strength>0){context.fillStyle=glowColor;context.shadowColor=glowColor;context.shadowBlur=radius;context.globalAlpha=opacity*strength*.43;context.fill(path);context.shadowBlur=radius*.25;context.globalAlpha=opacity*strength*.19;context.fill(path);}
- context.shadowBlur=0;context.globalAlpha=opacity;context.fillStyle=color;context.fill(path);context.restore();
+ context.shadowBlur=0;context.globalAlpha=opacity;context.fillStyle=gradient?canvasGradient(context,gradient):color;context.fill(path);context.restore();
+}
+const groupGradients=new WeakMap<ContinuousGroup,LinearGradientPaint>();
+function groupGradient(group:ContinuousGroup):LinearGradientPaint|undefined{
+ if(group.particles===false||!group.config.ink.gradient?.enabled)return undefined;
+ let paint=groupGradients.get(group);if(!paint){paint=gradientPaint(group.config.ink.gradient,group.brush.box,point=>world(point,group));groupGradients.set(group,paint);}return paint;
 }
 
 /** The same prepared source vertices are painted before, during and after the morph. */
@@ -153,17 +159,17 @@ export function drawContinuousInk(context:CanvasRenderingContext2D,motion:Contin
  const frame=referenceFrameAt(time,duration,motion.selection),morph=!complete&&motion.selection.outro==='classic'?ease((frame-156)/6):0,outro=!complete&&motion.selection.outro==='classic'&&frame>=150,inkScale=outro?handoffScale(frame):1;
  const selectedOutro=motion.selection.outro;
  if(!complete&&selectedOutro!=='classic'&&selectedOutro!=='none'&&time>duration-continuousMotionTiming.outro){
-  const inks=motion.chunks.map(chunk=>{const style=chunk.group.config,accent=chunk.group.colorAt?.(chunk.stroke),color=accent??style.ink.color;return {id:chunk.id,paintKey:`${chunk.group.index}/${motion.parts[chunk.part].id}/${color}`,samples:visibleVertices(chunk,time),color,glowColor:accent??style.glow.color,glowStrength:style.glow.enabled?style.glow.strength:0,glowRadius:style.glow.radius*chunk.group.scale};}),progress=(time-(duration-continuousMotionTiming.outro))/continuousMotionTiming.outro;
+  const inks=motion.chunks.map(chunk=>{const style=chunk.group.config,accent=chunk.group.colorAt?.(chunk.stroke),color=accent??style.ink.color,gradient=accent?undefined:groupGradient(chunk.group);return {id:chunk.id,paintKey:`${chunk.group.index}/${motion.parts[chunk.part].id}/${color}${gradient?'/gradient':''}`,samples:visibleVertices(chunk,time),color,gradient,glowColor:accent??style.glow.color,glowStrength:style.glow.enabled?style.glow.strength:0,glowRadius:style.glow.radius*chunk.group.scale};}),progress=(time-(duration-continuousMotionTiming.outro))/continuousMotionTiming.outro;
   drawVariantOutro(context,inks,selectedOutro,progress,{...motion.geometry,unit:Math.min(motion.width,motion.height)/1080},motion.outroColors,{intro:motion.selection.intro,ink:motion.ornate.anchors[0]?.color??'#ffffff'});
   return;
  }
- const paths=new Map<string,{path:Path2D;color:string;glow:string;strength:number;radius:number;opacity:number}>();
+ const paths=new Map<string,{path:Path2D;color:string;gradient?:LinearGradientPaint;glow:string;strength:number;radius:number;opacity:number}>();
  const shadows=new Map<string,{path:Path2D;part:RibbonPart;opacity:number}>();
  const states=outro?motion.parts.map(part=>partState(part,Math.max(162,Math.min(184,frame)))):[];
  const vanish=outro&&frame>184?clamp(185-frame):1;
  for(const chunk of motion.chunks){
   const source=visibleVertices(chunk,time);if(!source.length)continue;
-  const part=motion.parts[chunk.part],style=chunk.group.config,accent=chunk.group.colorAt?.(chunk.stroke),sourceColor=accent??style.ink.color,sourceGlow=accent??style.glow.color,color=outro?hexMix(sourceColor,part.color,morph):sourceColor,key=morph>=1?part.id:`${chunk.group.index}/${part.id}/${color}`;
+  const part=motion.parts[chunk.part],style=chunk.group.config,accent=chunk.group.colorAt?.(chunk.stroke),sourceColor=accent??style.ink.color,sourceGlow=accent??style.glow.color,color=outro?hexMix(sourceColor,part.color,morph):sourceColor,key=morph>=1?part.id:`${chunk.group.index}/${part.id}/${color}${!accent&&chunk.group.particles!==false&&style.ink.gradient?.enabled?'/gradient':''}`;
   const opacity=vanish*(outro?lerp(1,states[chunk.part].opacity,morph):1);if(opacity<=.0001)continue;
   let vertices:InkSample[]=source;
   if(outro)vertices=source.map(v=>{
@@ -171,14 +177,14 @@ export function drawContinuousInk(context:CanvasRenderingContext2D,motion:Contin
    return {...mixPoint(sourcePoint,target,morph),radius:lerp(v.radius*inkScale,target.radius,morph),u:v.u};
   });
   let entry=paths.get(key);
-  if(!entry){entry={path:new Path2D(),color,glow:outro?hexMix(sourceGlow,part.color,morph):sourceGlow,strength:style.glow.enabled?style.glow.strength*(1-morph):0,radius:lerp(style.glow.radius*chunk.group.scale,0,morph),opacity};paths.set(key,entry);}
+  if(!entry){const sourceGradient=accent?undefined:groupGradient(chunk.group),center=chunk.group.center;entry={path:new Path2D(),color,gradient:sourceGradient&&morph<1?(outro?blendGradient(sourceGradient,part.color,morph,p=>({x:center.x+(p.x-center.x)*inkScale,y:center.y+(p.y-center.y)*inkScale})):sourceGradient):undefined,glow:outro?hexMix(sourceGlow,part.color,morph):sourceGlow,strength:style.glow.enabled?style.glow.strength*(1-morph):0,radius:lerp(style.glow.radius*chunk.group.scale,0,morph),opacity};paths.set(key,entry);}
   if(!outro&&source===chunk.vertices){if(!chunk.fullPath){chunk.fullPath=new Path2D();appendCapsules(chunk.fullPath,chunk.vertices);}entry.path.addPath(chunk.fullPath);}
   else appendCapsules(entry.path,vertices);
   if(outro&&morph>0){let shadow=shadows.get(part.id);if(!shadow){shadow={path:new Path2D(),part,opacity};shadows.set(part.id,shadow);}appendCapsules(shadow.path,vertices);}
  }
  const contain=Math.min(motion.width/ribbonReference.width,motion.height/ribbonReference.height);
  for(const shadow of shadows.values()){context.save();context.translate(shadow.part.shadow.offsetX*contain*morph,shadow.part.shadow.offsetY*contain*morph);context.globalAlpha=shadow.opacity*shadow.part.shadow.opacity*morph;context.fillStyle=shadow.part.shadow.color;context.fill(shadow.path);context.restore();}
- for(const entry of paths.values())fillPath(context,entry.path,entry.color,entry.glow,entry.strength,entry.radius,entry.opacity);
+ for(const entry of paths.values())fillPath(context,entry.path,entry.color,entry.glow,entry.strength,entry.radius,entry.opacity,entry.gradient);
 }
 
 function particleState(track:ParticleTrack,frame:number):ParticleKey|null{

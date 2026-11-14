@@ -8,6 +8,7 @@ import {isDecorationId} from './decoration-catalog';
 import {referenceDecorationPaths} from './reference-decorations';
 import {buildTraceBrush,traceSampleRadius} from './tracing';
 import {resolveMotionSelection} from './animation-catalog';
+import {canvasGradient,gradientPaint,type GradientConfig} from './gradient';
 
 type Phase={start:number;end:number};
 type Plan={lead:Phase;writing:Phase;returning:Phase;underline:Phase;leaving:Phase;decoration:Phase;reaction:Phase;wink:Phase;outro:Phase;activeEnd:number;introOutroEnabled:boolean};
@@ -132,9 +133,9 @@ export function hitTest(scene:PreparedScene,x:number,y:number):Hit|null{
  for(const area of [...scene.hitAreas].sort((a,b)=>(a.target==='decoration'?0:1)-(b.target==='decoration'?0:1))){const b=area.bounds;if(x>=b.minX&&x<=b.maxX&&y>=b.minY&&y<=b.maxY)return {index:area.index,target:area.target};}return null;
 }
 
-function fillInk(context:CanvasRenderingContext2D,person:PersonConfig,scale:number,path:Path2D,time:number,color?:string):void{
+function fillInk(context:CanvasRenderingContext2D,person:PersonConfig,scale:number,path:Path2D,time:number,color?:string,bounds?:Box):void{
  if(person.glow.enabled&&person.glow.strength>0){const breath=1+.04*Math.sin(time*1.65),inherited=context.globalAlpha,glow=color??person.glow.color;context.save();context.fillStyle=glow;context.shadowColor=glow;context.shadowBlur=person.glow.radius*scale;context.globalAlpha=inherited*person.glow.strength*.46*breath;context.fill(path);context.shadowBlur=person.glow.radius*scale*.28;context.globalAlpha=inherited*person.glow.strength*.22*breath;context.fill(path);context.restore();}
- context.fillStyle=color??person.ink.color;context.fill(path);
+ context.fillStyle=!color&&bounds&&person.ink.gradient?.enabled?canvasGradient(context,gradientPaint(person.ink.gradient,bounds)):color??person.ink.color;context.fill(path);
 }
 const strokePaths=new WeakMap<PreparedStroke,Map<number,Path2D>>(),prefixPaths=new WeakMap<PreparedBrush,Map<number,{count:number;path:Path2D}>>();
 function appendStroke(path:Path2D,stroke:PreparedStroke,p:number,pressure:number,penWidth:number):void{
@@ -152,7 +153,7 @@ function drawBrush(context:CanvasRenderingContext2D,group:PersonScene,time:numbe
  let widths=prefixPaths.get(brush);if(!widths){widths=new Map();prefixPaths.set(brush,widths);}
  let prefix=widths.get(penWidth);if(!prefix||prefix.count>count)prefix={count:0,path:new Path2D()};for(let i=prefix.count;i<count;i++)prefix.path.addPath(finishedPath(brush.strokes[i],config.font.pressure,penWidth));prefix.count=count;widths.set(penWidth,prefix);if(widths.size>3)widths.delete(widths.keys().next().value!);
  let path=prefix.path;const active=brush.strokes[count];if(active){const p=brushProgress((natural-active.start)/active.duration);if(p>0){path=new Path2D(prefix.path);appendStroke(path,active,p,config.font.pressure,penWidth);}}
- fillInk(context,config,group.scale,path,time);
+ fillInk(context,config,group.scale,path,time,undefined,group.signatureBounds);
 }
 function curveInk(curve:Curve,p:number,width:number,profile='brush',offset:Point={x:0,y:0}):InkSample[]{
  if(p<=0)return [];const count=Math.max(1,Math.ceil(curve.length*p/2));return Array.from({length:count+1},(_,i)=>{const u=p*i/count,a=pointAt(curve,u),w=profile==='round'?1:profile==='line'?Math.max(.025,Math.sin(Math.PI*Math.pow(u,.82)))*(.75+.25*u):profile==='taper'?Math.max(.025,(1-u)**.7):.28+.72*Math.sin(Math.PI*u)**.7;return {x:a.x+offset.x*smooth(u),y:a.y+offset.y*smooth(u),u,radius:Math.max(.02,width*.5*w)};});
@@ -282,10 +283,10 @@ function drawDecoration(context:CanvasRenderingContext2D,scene:Pick<PreparedScen
 }
 
 /** Catalog previews paint the actual ornament at its completed, resting pose. */
-export function renderDecorationThumbnail(canvas:HTMLCanvasElement,id:string,source:PersonConfig,background:string,transparent=false):void{
+export function renderDecorationThumbnail(canvas:HTMLCanvasElement,id:string,source:PersonConfig,background:string,transparent=false,backgroundGradient?:GradientConfig):void{
  const context=canvas.getContext('2d',{alpha:true});if(!context)return;
  const width=canvas.width,height=canvas.height;
- context.setTransform(1,0,0,1,0,0);context.globalAlpha=1;context.globalCompositeOperation='source-over';context.shadowBlur=0;context.clearRect(0,0,width,height);if(!transparent){context.fillStyle=background;context.fillRect(0,0,width,height);}
+ context.setTransform(1,0,0,1,0,0);context.globalAlpha=1;context.globalCompositeOperation='source-over';context.shadowBlur=0;context.clearRect(0,0,width,height);if(!transparent){context.fillStyle=backgroundGradient?.enabled?canvasGradient(context,gradientPaint(backgroundGradient,{minX:0,minY:0,maxX:width,maxY:height})):background;context.fillRect(0,0,width,height);}
  if(!isDecorationId(id)||id==='none'||width<=0||height<=0)return;
  const config=defaultWebConfig();config.animation.introOutroEnabled=false;
  const person=effectivePerson(source,false);person.decoration={...person.decoration,id,offsetX:0,offsetY:0};
@@ -319,7 +320,7 @@ function drawEffects(context:CanvasRenderingContext2D,scene:PreparedScene,time:n
 export function renderScene(canvas:HTMLCanvasElement,scene:PreparedScene,time:number,complete=false):void{
  if(canvas.width!==scene.width)canvas.width=scene.width;if(canvas.height!==scene.height)canvas.height=scene.height;const context=canvas.getContext('2d',{alpha:true});if(!context)throw new Error('当前浏览器无法创建签名画布，请换用系统浏览器。');const t=complete?scene.editingTime:clamp(Number.isFinite(time)?time:0,0,scene.duration);
  const enabled=scene.config.animation.introOutroEnabled;
- context.setTransform(1,0,0,1,0,0);context.globalAlpha=1;context.globalCompositeOperation='source-over';context.shadowBlur=0;context.clearRect(0,0,scene.width,scene.height);if(!scene.config.canvas.transparent){context.fillStyle=scene.config.canvas.background;context.fillRect(0,0,scene.width,scene.height);}
+ context.setTransform(1,0,0,1,0,0);context.globalAlpha=1;context.globalCompositeOperation='source-over';context.shadowBlur=0;context.clearRect(0,0,scene.width,scene.height);if(!scene.config.canvas.transparent){context.fillStyle=scene.config.canvas.gradient?.enabled?canvasGradient(context,gradientPaint(scene.config.canvas.gradient,{minX:0,minY:0,maxX:scene.width,maxY:scene.height})):scene.config.canvas.background;context.fillRect(0,0,scene.width,scene.height);}
  if(enabled&&scene.continuous){if(!complete)drawContinuousBackdrop(context,scene.continuous,t,scene.duration);drawContinuousInk(context,scene.continuous,t,scene.duration,complete);if(!complete)drawContinuousParticles(context,scene.continuous,t,scene.duration);return;}
  for(const group of scene.people){context.save();context.translate(group.tx,group.ty);context.rotate(group.angle);context.scale(group.scale,group.scale);drawBrush(context,group,t);context.restore();drawDecoration(context,scene,group,t);}
 }

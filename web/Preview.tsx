@@ -168,7 +168,7 @@ export function Preview({scene,selected,config,audioUrl,pauseToken,completeToken
   },[pause,resetAnchor,setPlayback,showFrame,syncAudio]);
   useEffect(()=>{
     const key=(event:KeyboardEvent)=>{
-      if(event.defaultPrevented||event.repeat||event.isComposing||event.ctrlKey||event.metaKey||event.altKey||document.querySelector('dialog[open]')||event.code!=='Space'||(event.target as HTMLElement)?.closest('input,button,select,textarea,summary,a,audio,video,[contenteditable=true]'))return;
+      if(event.defaultPrevented||event.repeat||event.isComposing||event.ctrlKey||event.metaKey||event.altKey||document.querySelector('dialog[open]')||event.code!=='Space'||(event.target as HTMLElement)?.closest('input,button,select,textarea,summary,a,audio,video,[contenteditable=true],[data-editor-shortcuts="off"]'))return;
       event.preventDefault();toggle();
     };
     window.addEventListener('keydown',key);

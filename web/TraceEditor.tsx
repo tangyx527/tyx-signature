@@ -2,9 +2,11 @@ import {useCallback,useEffect,useId,useLayoutEffect,useMemo,useRef,useState,type
 import {appendCapsules} from './brush-engine';
 import {appendTraceStroke,beautifyTrace,buildTraceBrush,traceBrushTransform,TRACE_BASE_RADIUS,type TraceData,type TracePoint,type TraceStroke,type TraceStrength} from './tracing';
 import {Icon,Range,Toggle} from './ui';
+import {dismissTraceGuide,readTraceGuideDismissed} from './trace-guide-state';
+import {canvasGradient,gradientPaint,type GradientConfig} from './gradient';
 import './trace-editor.css';
 
-type Props={open:boolean;initialTrace?:TraceData;inkColor:string;penWidth:number;duration?:number;renderPreview?:(canvas:HTMLCanvasElement,trace:TraceData,time:number,complete:boolean)=>void;onApply:(trace:TraceData)=>void;onClose:()=>void};
+type Props={open:boolean;initialTrace?:TraceData;inkColor:string;inkGradient?:GradientConfig;penWidth:number;duration?:number;renderPreview?:(canvas:HTMLCanvasElement,trace:TraceData,time:number,complete:boolean)=>void;onApply:(trace:TraceData)=>void;onClose:()=>void};
 type Mode='adjust'|'draw'|'preview';
 type Guide={image:HTMLImageElement;url:string;name:string};
 type Capture={id:number;kind:TraceStroke['pointerType'];points:TracePoint[];display:TracePoint[]};
@@ -13,12 +15,14 @@ const bounded=(value:number,min=0,max=1)=>Math.max(min,Math.min(max,value));
 const newTrace=():TraceData=>({version:1,aspect:16/9,strength:'standard',strokes:[]});
 const strengthLabels:Record<TraceStrength,string>={light:'轻度',standard:'标准',strong:'强力'};
 
-export function TraceEditor({open,initialTrace,inkColor,penWidth,duration=5,renderPreview,onApply,onClose}:Props){
+export function TraceEditor({open,initialTrace,inkColor,inkGradient,penWidth,duration=5,renderPreview,onApply,onClose}:Props){
   const id=useId(),dialog=useRef<HTMLDialogElement>(null),stage=useRef<HTMLDivElement>(null),guideCanvas=useRef<HTMLCanvasElement>(null),inkCanvas=useRef<HTMLCanvasElement>(null),fileInput=useRef<HTMLInputElement>(null);
   const latest=useRef({initialTrace,onClose,renderPreview});latest.current={initialTrace,onClose,renderPreview};
   const [strokes,setStrokes]=useState<TraceStroke[]>([]),[strength,setStrength]=useState<TraceStrength>('standard'),[aspect,setAspect]=useState(16/9),[mode,setMode]=useState<Mode>('adjust');
   const [guide,setGuide]=useState<Guide|null>(null),[guideOpacity,setGuideOpacity]=useState(.3),[guideZoom,setGuideZoom]=useState(1),[guideOffset,setGuideOffset]=useState({x:0,y:0}),[showGuide,setShowGuide]=useState(true);
   const [room,setRoom]=useState({width:800,height:450}),[error,setError]=useState(''),[playing,setPlaying]=useState(false),[playhead,setPlayhead]=useState(0),[previewFinished,setPreviewFinished]=useState(false),[previewAspect,setPreviewAspect]=useState(16/9);
+  const [helpExpanded,setHelpExpanded]=useState(()=>{try{return !readTraceGuideDismissed(window.localStorage);}catch{return true;}});
+  const helpTrigger=useRef<HTMLButtonElement>(null);
   const guideRef=useRef<Guide|null>(null),uploadGeneration=useRef(0),capture=useRef<Capture|null>(null),imageDrag=useRef<{id:number;x:number;y:number;offset:{x:number;y:number}}|null>(null),origin=useRef(0),clearedBackup=useRef<TraceStroke[]|null>(null),paintFrame=useRef(0);
   const blockedPointers=useRef(new Set<number>());
   const lastSampleTime=useRef(0);
@@ -28,6 +32,9 @@ export function TraceEditor({open,initialTrace,inkColor,penWidth,duration=5,rend
   const brush=useMemo(()=>strokes.length?buildTraceBrush(trace):null,[trace]);
   const brushTransform=useMemo(()=>brush?traceBrushTransform(trace):null,[brush,trace]);
   const hasInk=strokes.some(stroke=>stroke.points.length>0);
+  const helpStep=mode==='preview'?2:mode==='draw'?1:0;
+  const rememberHelp=()=>{try{dismissTraceGuide(window.localStorage);}catch{/* Help remains dismissible when browser storage is unavailable. */}};
+  const closeHelp=()=>{helpTrigger.current?.focus({preventScroll:true});setHelpExpanded(false);rememberHelp();};
   const displayAspect=mode==='preview'?previewAspect:aspect;
   const displayWidth=Math.max(1,Math.min(room.width,room.height*displayAspect)),displayHeight=displayWidth/displayAspect;
   const luminance=[1,3,5].map(start=>parseInt(inkColor.slice(start,start+2),16)||0).reduce((n,value,index)=>n+value*[.2126,.7152,.0722][index],0);
@@ -81,13 +88,23 @@ export function TraceEditor({open,initialTrace,inkColor,penWidth,duration=5,rend
       return;
     }
     const height=Math.round(BOARD_WIDTH/aspect);if(canvas.width!==BOARD_WIDTH)canvas.width=BOARD_WIDTH;if(canvas.height!==height)canvas.height=height;
-    const context=canvas.getContext('2d');if(!context)return;context.clearRect(0,0,canvas.width,canvas.height);context.fillStyle=inkColor;context.strokeStyle=inkColor;context.lineCap='round';context.lineJoin='round';
+    const context=canvas.getContext('2d');if(!context)return;context.clearRect(0,0,canvas.width,canvas.height);
+    let paint:string|CanvasGradient=inkColor;
+    if(inkGradient?.enabled){
+      const points=[...strokes.flatMap(stroke=>stroke.points),...(capture.current?.display??[])];
+      let minX=canvas.width,minY=canvas.height,maxX=0,maxY=0;
+      for(const point of points){minX=Math.min(minX,point.x*canvas.width);minY=Math.min(minY,point.y*canvas.height);maxX=Math.max(maxX,point.x*canvas.width);maxY=Math.max(maxY,point.y*canvas.height);}
+      const bounds=points.length?{minX,minY,maxX,maxY}:{minX:0,minY:0,maxX:canvas.width,maxY:canvas.height};
+      paint=canvasGradient(context,gradientPaint(inkGradient,bounds));
+    }
+    context.fillStyle=paint;context.strokeStyle=paint;context.lineCap='round';context.lineJoin='round';
     // Invert only the brush's fit transform: the guide and finished ink retain
     // their original normalized positions while using the product's fixed ink.
     if(brush&&brushTransform){
       context.save();
       context.translate(brushTransform.offsetX*canvas.width,brushTransform.offsetY*canvas.height*aspect);
       context.scale(canvas.width/brushTransform.scale,canvas.height*aspect/brushTransform.scale);
+      if(inkGradient?.enabled)context.fillStyle=canvasGradient(context,gradientPaint(inkGradient,brush.box));
       for(const stroke of brush.strokes){context.beginPath();appendCapsules(context,stroke.samples.map(point=>({...point,radius:point.radius*penWidth})));context.fill();}
       context.restore();
     }
@@ -98,7 +115,7 @@ export function TraceEditor({open,initialTrace,inkColor,penWidth,duration=5,rend
       context.beginPath();context.moveTo(points[0].x*canvas.width,points[0].y*canvas.height);for(const point of points.slice(1))context.lineTo(point.x*canvas.width,point.y*canvas.height);context.lineWidth=width;context.stroke();
     };
     if(capture.current)drawPoints(capture.current.display);
-  },[aspect,brush,brushTransform,hasInk,inkColor,mode,penWidth,playhead,previewFinished,trace]);
+  },[aspect,brush,brushTransform,hasInk,inkColor,inkGradient,mode,penWidth,playhead,previewFinished,trace,strokes]);
   const paintInkLatest=useRef(paintInk);paintInkLatest.current=paintInk;
   const scheduleInk=()=>{if(paintFrame.current)return;paintFrame.current=requestAnimationFrame(()=>{paintFrame.current=0;paintInkLatest.current();});};
   useLayoutEffect(()=>{if(open){paintGuide();paintInk();}},[open,paintGuide,paintInk]);
@@ -184,6 +201,18 @@ export function TraceEditor({open,initialTrace,inkColor,penWidth,duration=5,rend
     <header className="trace-editor-header"><div><h2 id={`${id}-title`}>描图签名</h2><p>沿着参考图描写，留下自己的笔迹。</p></div><button type="button" className="icon-button" aria-label="关闭描图签名" onClick={onClose}><Icon name="close" size={18}/></button></header>
     <div className="trace-editor-body">
       <aside className="trace-editor-tools" aria-label="描摹设置">
+        <div className="trace-help-header"><strong>描图帮助</strong><button type="button" className="trace-help-trigger" ref={helpTrigger} aria-expanded={helpExpanded} aria-controls={`${id}-trace-guide`} onClick={()=>{if(helpExpanded)closeHelp();else setHelpExpanded(true);}}>{helpExpanded?'收起提示':'查看步骤'}<Icon name="chevron" size={12}/></button></div>
+        {helpExpanded&&<section className="trace-guide" id={`${id}-trace-guide`} data-tour="trace-guide" aria-labelledby={`${id}-trace-guide-title`}>
+          <h3 id={`${id}-trace-guide-title`}>三步完成描图</h3>
+          <ol className="trace-guide-steps">
+            {[
+              {title:'上传和调整底图',text:guide?'拖动定位，调整缩放和透明度。':hasInk?'已有笔迹，可继续描写或预览。':'上传参考图，也可直接自由签名。',done:!!guide||hasInk||mode==='draw'},
+              {title:'开始或继续描写',text:hasInk?'可继续描写，或点底部预览动画。':guide?'按住沿线描写，松开后可续描。':'按住画布自由签名，松开后可续描。',done:hasInk},
+              {title:'预览并应用',text:'参考图已隐藏，确认后完成并应用。',done:false},
+            ].map((step,index)=><li key={step.title} data-state={helpStep===index?'current':step.done?'done':'pending'} aria-current={helpStep===index?'step':undefined}><span className="trace-guide-number" aria-hidden="true">{step.done&&helpStep!==index?<Icon name="check" size={12}/>:index+1}</span><div><strong>{step.title}</strong>{helpStep===index&&<p role="status">{step.text}</p>}</div></li>)}
+          </ol>
+          <button type="button" className="trace-guide-dismiss" onClick={closeHelp}>我知道了</button>
+        </section>}
         <section className="trace-tool-group"><h3>参考图</h3><button type="button" className="button secondary trace-upload" onClick={()=>fileInput.current?.click()}><Icon name="upload" size={16}/>{guide?'更换参考图':'上传参考图'}</button><input ref={fileInput} type="file" accept="image/png,image/jpeg,image/webp" className="file-input" aria-label="上传签名参考图" onChange={event=>{void chooseImage(event.currentTarget.files?.[0]);}}/>{guide&&<span className="trace-file-name" title={guide.name}>{guide.name}</span>}
           <div className="mode-switch" role="group" aria-label="描摹模式"><button type="button" className="mode-option" aria-pressed={mode==='adjust'} onClick={()=>changeMode('adjust')}>调整底图</button><button type="button" className="mode-option" aria-pressed={mode==='draw'} onClick={()=>changeMode('draw')}>{strokes.length?'继续描写':'开始描写'}</button></div>
           {guide&&mode==='adjust'&&<><Range title="底图缩放" value={guideZoom} min={.25} max={3} step={.05} suffix="×" onChange={setGuideZoom}/><Range title="底图透明度" value={Math.round(guideOpacity*100)} min={0} max={100} step={5} suffix="%" onChange={value=>setGuideOpacity(value/100)}/><p className="hint">拖动图片调整位置，开始描写后底图会锁定。</p></>}
@@ -207,6 +236,6 @@ export function TraceEditor({open,initialTrace,inkColor,penWidth,duration=5,rend
         </div>
       </div>
     </div>
-    <footer className="trace-editor-footer"><span>一笔签名 · {strengthLabels[strength]}美化</span><div><button type="button" className="button secondary" disabled={!hasInk} onClick={preview}><Icon name="play" size={16}/>预览动画</button><button type="button" className="button primary" disabled={!hasInk} onClick={()=>{setPlaying(false);onApply(structuredClone(trace));}}>完成并应用</button></div></footer>
+    <footer className="trace-editor-footer"><span>一笔签名 · {strengthLabels[strength]}美化</span><div><button type="button" className="button secondary" disabled={!hasInk} onClick={preview}><Icon name="play" size={16}/>预览动画</button><button type="button" className="button primary" disabled={!hasInk} onClick={()=>{setPlaying(false);setHelpExpanded(false);rememberHelp();onApply(structuredClone(trace));}}>完成并应用</button></div></footer>
   </dialog>;
 }

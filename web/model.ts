@@ -5,6 +5,7 @@ import {STORED_DECORATION_IDS,isDecorationId} from './decoration-catalog';
 import {traceSchema} from './tracing';
 import {introPresets,outroPresets} from './animation-catalog';
 import {ornatePresets} from './ornate-types';
+import {gradientSchema} from './gradient';
 
 const color = z.string().regex(/^#[\da-f]{6}$/i, '请选择有效的颜色');
 const finite = (min:number,max:number) => z.number().finite().min(min).max(max);
@@ -20,7 +21,7 @@ export const personSchema = z.object({
   scheme:z.enum(['classic','loop','sweep']).default('classic'),
   position:z.object({x:finite(-.45,.45),y:finite(-.45,.45),scale:finite(.45,3),rotation:finite(-20,20)}),
   font:z.object({family:z.enum(['tyx-brush','tyx-soft']).default('tyx-brush'),size:finite(48,320),penWidth:finite(.5,2),pressure:finite(0,1),initialScale:finite(1,1.6),initialOffsetX:finite(-120,120),initialOffsetY:finite(-120,120),terminalLength:finite(.5,1.8)}),
-  ink:z.object({color}),
+  ink:z.object({color,gradient:gradientSchema.optional()}),
   glow:z.object({enabled:z.boolean(),color,strength:finite(0,1),radius:finite(0,48)}),
   decoration:z.object({id:z.enum(STORED_DECORATION_IDS),scale:finite(.5,1.5),offsetX:finite(-.45,.45),offsetY:finite(-.45,.45),action:z.enum(['wink','none']),earFold:z.boolean(),playful:z.boolean().default(true)}),
   underline:z.object({enabled:z.boolean(),lift:z.boolean()}),
@@ -30,7 +31,7 @@ export const webSchema = z.object({
   version:z.literal(2),
   mode:z.enum(['single','couple']),
   people:z.tuple([personSchema,personSchema]),
-  canvas:z.object({aspect:z.enum(['landscape','portrait','square']),background:color,transparent:z.boolean().default(false),fps:z.union([z.literal(30),z.literal(60)]).default(30)}),
+  canvas:z.object({aspect:z.enum(['landscape','portrait','square']),background:color,gradient:gradientSchema.optional(),transparent:z.boolean().default(false),fps:z.union([z.literal(30),z.literal(60)]).default(30)}),
   timing:z.object({duration:finite(3,15),writingRatio:finite(.35,.8),hold:finite(.2,3)}),
   animation:z.object({
     introOutroEnabled:z.boolean().default(true),
