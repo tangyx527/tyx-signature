@@ -1,7 +1,14 @@
 import {pointAt,type Point} from '../src/geometry';
 import {appendCapsules,brushProgress,inkRadius,strokeAt,type InkSample,type PreparedBrush,type PreparedStroke} from './brush-engine';
 import {ribbonReference} from './ribbon-reference';
-import {referenceParticleTracks,referenceFishOutline,referenceEntryArcOutline,referenceDropletOutline,referenceBubbleOutline,referenceConnection,arcConnection,referenceRightGroup} from './particle-reference';
+import {referenceParticleTracks,referenceFishOutline,referenceEntryArcOutline,referenceConnection,arcConnection,referenceRightGroup} from './particle-reference';
+import type {MotionSelection} from './animation-catalog';
+import {drawVariantOutro,type MotionGeometry} from './motion-variants';
+import {prepareCometFlight,drawCometIntro,type CometFlight} from './comet-intro';
+import {isOrnatePreset,type OrnateLayout,type OrnateClock} from './ornate-types';
+import {drawOrnateBackdrop,drawOrnateForeground,type OrnatePen} from './ornate-motion';
+import {outroThemeColors} from './motion-palette';
+import {drawClassicEntryParticle} from './entry-particle-artwork';
 
 type Phase={start:number;end:number};
 export type ContinuousGroup={index:0|1;brush:PreparedBrush;scale:number;angle:number;tx:number;ty:number;center:Point;plan:{writing:Phase;outro:Phase};config:{font:{penWidth:number;pressure:number};ink:{color:string};glow:{enabled:boolean;color:string;strength:number;radius:number}};particles?:boolean;radiusAt?:(stroke:PreparedStroke,u:number)=>number;colorAt?:(stroke:PreparedStroke)=>string|undefined;deformPoint?:(id:string,p:Point,time:number)=>Point;deformRadius?:(id:string,time:number)=>number;deformPhase?:Phase};
@@ -9,7 +16,7 @@ type Vertex=InkSample&{strokeU:number;targetU:number};
 type InkChunk={id:number;group:ContinuousGroup;stroke:PreparedStroke;from:number;to:number;part:number;vertices:Vertex[];fullPath?:Path2D};
 type RibbonKey={frame:number;center:Point;centerline:Point[];widths:number[];opacity:number};
 type RibbonPart={id:string;color:string;keys:RibbonKey[];length:number;bucket:number;start:number;end:number;shadow:{color:string;offsetX:number;offsetY:number;opacity:number}};
-export type ContinuousMotion={groups:ContinuousGroup[];width:number;height:number;chunks:InkChunk[];parts:RibbonPart[]};
+export type ContinuousMotion={groups:ContinuousGroup[];width:number;height:number;chunks:InkChunk[];parts:RibbonPart[];selection:MotionSelection;geometry:MotionGeometry;comets:Map<ContinuousGroup,CometFlight>;ornate:OrnateLayout;outroColors:readonly string[]};
 type ParticleKey={frame:number;x:number;y:number;radius?:number;rotation?:number;opacity?:number;color?:string;trimStart?:number;trimEnd?:number;strokeWidth?:number;aspect?:number;fill?:number};
 type ParticleTrack={id:string;kind:string;birth:number;death:number;keys:ParticleKey[];color?:string;attachToPen?:boolean;outline?:readonly Point[]};
 const tracks=referenceParticleTracks as readonly ParticleTrack[];
@@ -20,13 +27,22 @@ const lerp=(a:number,b:number,u:number)=>a+(b-a)*u;
 const mixPoint=(a:Point,b:Point,u:number):Point=>({x:lerp(a.x,b.x,u),y:lerp(a.y,b.y,u)});
 const world=(p:Point,g:ContinuousGroup):Point=>({x:(p.x*Math.cos(g.angle)-p.y*Math.sin(g.angle))*g.scale+g.tx,y:(p.x*Math.sin(g.angle)+p.y*Math.cos(g.angle))*g.scale+g.ty});
 export const continuousMotionTiming={intro:.8,outro:1.5,fps:30};
+const classicSelection:MotionSelection={intro:'classic',outro:'classic'};
+
+export function motionIntroDuration(selection:MotionSelection,duration:number):number{
+ if(selection.intro==='none')return 0;
+ if(selection.intro!=='comet'&&!isOrnatePreset(selection.intro))return continuousMotionTiming.intro;
+ const reservedOutro=selection.outro==='none'?0:continuousMotionTiming.outro;
+ return Math.min(selection.intro==='comet'?1.2:1.35,Math.max(.45,duration-reservedOutro-.95));
+}
 
 /** Only the middle stretches. One continuous source clock drives every object's lifetime. */
-export function referenceFrameAt(time:number,duration:number):number{
- if(time<=.8)return Math.max(0,time)*30;
- const outro=duration-1.5;
- if(time>=outro)return 150+(time-outro)*30;
- return 24+(time-.8)/Math.max(.001,outro-.8)*126;
+export function referenceFrameAt(time:number,duration:number,selection:MotionSelection=classicSelection):number{
+ const intro=motionIntroDuration(selection,duration),outroDuration=selection.outro==='none'?0:continuousMotionTiming.outro;
+ if(intro>0&&time<=intro)return Math.max(0,time)/intro*24;
+ const outro=duration-outroDuration;
+ if(outroDuration>0&&time>=outro)return 150+(time-outro)*30;
+ return 24+clamp((time-intro)/Math.max(.001,outro-intro))*126;
 }
 export function naturalInkTime(group:ContinuousGroup,time:number):number{
  const phase=group.plan.writing,u=clamp((time-phase.start)/(phase.end-phase.start));
@@ -65,19 +81,37 @@ function sourceVertex(group:ContinuousGroup,stroke:PreparedStroke,u:number,targe
 }
 
 /** Every actual ink segment receives one permanent destination among the five color families. */
-export function prepareContinuousMotion(groups:ContinuousGroup[],width:number,height:number):ContinuousMotion{
+export function prepareContinuousMotion(groups:ContinuousGroup[],width:number,height:number,selection:MotionSelection=classicSelection):ContinuousMotion{
  const lengths=groups.flatMap(group=>group.brush.strokes.map(stroke=>({group,stroke,length:Math.max(stroke.curve.length,stroke.dot?stroke.width*2:1)*group.scale}))),total=lengths.reduce((sum,item)=>sum+item.length,0)||1;
  const chunks:InkChunk[]=[],parts=sourceParts;let cursor=0;
  for(const {group,stroke,length} of lengths){
   const begin=cursor/total,end=(cursor+length)/total;cursor+=length;
   for(let partIndex=0;partIndex<parts.length;partIndex++){
    const part=parts[partIndex],a=(part.bucket+part.start)/5,b=(part.bucket+part.end)/5,lo=Math.max(a,begin),hi=Math.min(b,end);if(hi<=lo)continue;
-   const from=(lo-begin)/(end-begin),to=(hi-begin)/(end-begin),count=Math.max(2,Math.ceil(stroke.curve.length*(to-from)/1.7)),vertices:Vertex[]=[];
+   const from=(lo-begin)/(end-begin),to=(hi-begin)/(end-begin),count=Math.max(2,Math.ceil((stroke.fixedInk?stroke.samples.length-1:stroke.curve.length/1.7)*(to-from))),vertices:Vertex[]=[];
    for(let i=0;i<=count;i++){const u=lerp(from,to,i/count),global=lerp(begin,end,u);vertices.push(sourceVertex(group,stroke,u,(global-a)/(b-a)));}
    chunks.push({id:chunks.length,group,stroke,from,to,part:partIndex,vertices});
   }
  }
- return {groups,width,height,chunks,parts};
+ let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;
+ for(const chunk of chunks)for(const p of chunk.vertices){minX=Math.min(minX,p.x);minY=Math.min(minY,p.y);maxX=Math.max(maxX,p.x);maxY=Math.max(maxY,p.y);}
+ const unit=Math.min(width/1920,height/1080),center=Number.isFinite(minX)?{x:(minX+maxX)/2,y:(minY+maxY)/2}:{x:width/2,y:height/2};let radius=100*unit;
+ for(const chunk of chunks)for(const p of chunk.vertices)radius=Math.max(radius,Math.hypot(p.x-center.x,p.y-center.y));
+ const comets=new Map<ContinuousGroup,CometFlight>();
+ if(selection.intro==='comet')for(const group of groups){
+  if(group.particles===false||!group.brush.strokes.length)continue;
+  const curve=group.brush.strokes[0].curve,first=strokeAt(group.brush,0).point,next=curve.points.find(p=>Math.hypot(p.x-first.x,p.y-first.y)>.01)??{x:first.x+1,y:first.y},start=world(first,group),direction=world(next,group);
+  comets.set(group,prepareCometFlight(start,{x:direction.x-start.x,y:direction.y-start.y},width,height,group.index));
+ }
+ const anchors=groups.filter(group=>group.particles!==false&&group.brush.strokes.length>0).map(group=>({point:world(strokeAt(group.brush,0).point,group),color:group.config.ink.color,index:group.index}));
+ const regions=groups.filter(group=>group.particles!==false&&group.brush.strokes.length>0).map(group=>{
+  const strokeIndices=group.brush.strokes.flatMap((stroke,i)=>!stroke.dot&&stroke.curve.length>1?[i]:[]),paths=strokeIndices.map(index=>Array.from({length:32},(_,i)=>world(pointAt(group.brush.strokes[index].curve,i/31),group))),vertices=chunks.filter(chunk=>chunk.group===group).flatMap(chunk=>chunk.vertices);
+  let x1=Infinity,y1=Infinity,x2=-Infinity,y2=-Infinity;for(const p of vertices){x1=Math.min(x1,p.x-p.radius);y1=Math.min(y1,p.y-p.radius);x2=Math.max(x2,p.x+p.radius);y2=Math.max(y2,p.y+p.radius);}
+  if(!Number.isFinite(x1)){const p=world(strokeAt(group.brush,0).point,group);x1=p.x-10;y1=p.y-10;x2=p.x+10;y2=p.y+10;}
+  return {index:group.index,color:group.config.ink.color,center:{x:(x1+x2)/2,y:(y1+y2)/2},bounds:{minX:x1,minY:y1,maxX:x2,maxY:y2},paths,strokeIndices,pathProgress:paths.map(()=>1)};
+ });
+ const ornate:OrnateLayout={width,height,center,spanX:Number.isFinite(minX)?Math.max(1,maxX-minX):width*.5,spanY:Number.isFinite(minY)?Math.max(1,maxY-minY):height*.3,anchors,regions};
+ return {groups,width,height,chunks,parts,selection:{...selection},geometry:{center,radius,unit},comets,ornate,outroColors:outroThemeColors(selection.outro,selection.intro,anchors[0]?.color??'#ffffff')};
 }
 
 function visibleVertices(chunk:InkChunk,time:number):Vertex[]{
@@ -115,12 +149,18 @@ function fillPath(context:CanvasRenderingContext2D,path:Path2D,color:string,glow
 }
 
 /** The same prepared source vertices are painted before, during and after the morph. */
-export function drawContinuousInk(context:CanvasRenderingContext2D,motion:ContinuousMotion,time:number,duration:number):void{
- const frame=referenceFrameAt(time,duration),morph=ease((frame-156)/6),outro=frame>=150,inkScale=outro?handoffScale(frame):1;
+export function drawContinuousInk(context:CanvasRenderingContext2D,motion:ContinuousMotion,time:number,duration:number,complete=false):void{
+ const frame=referenceFrameAt(time,duration,motion.selection),morph=!complete&&motion.selection.outro==='classic'?ease((frame-156)/6):0,outro=!complete&&motion.selection.outro==='classic'&&frame>=150,inkScale=outro?handoffScale(frame):1;
+ const selectedOutro=motion.selection.outro;
+ if(!complete&&selectedOutro!=='classic'&&selectedOutro!=='none'&&time>duration-continuousMotionTiming.outro){
+  const inks=motion.chunks.map(chunk=>{const style=chunk.group.config,accent=chunk.group.colorAt?.(chunk.stroke),color=accent??style.ink.color;return {id:chunk.id,paintKey:`${chunk.group.index}/${motion.parts[chunk.part].id}/${color}`,samples:visibleVertices(chunk,time),color,glowColor:accent??style.glow.color,glowStrength:style.glow.enabled?style.glow.strength:0,glowRadius:style.glow.radius*chunk.group.scale};}),progress=(time-(duration-continuousMotionTiming.outro))/continuousMotionTiming.outro;
+  drawVariantOutro(context,inks,selectedOutro,progress,{...motion.geometry,unit:Math.min(motion.width,motion.height)/1080},motion.outroColors,{intro:motion.selection.intro,ink:motion.ornate.anchors[0]?.color??'#ffffff'});
+  return;
+ }
  const paths=new Map<string,{path:Path2D;color:string;glow:string;strength:number;radius:number;opacity:number}>();
  const shadows=new Map<string,{path:Path2D;part:RibbonPart;opacity:number}>();
  const states=outro?motion.parts.map(part=>partState(part,Math.max(162,Math.min(184,frame)))):[];
- const vanish=frame>184?clamp(185-frame):1;
+ const vanish=outro&&frame>184?clamp(185-frame):1;
  for(const chunk of motion.chunks){
   const source=visibleVertices(chunk,time);if(!source.length)continue;
   const part=motion.parts[chunk.part],style=chunk.group.config,accent=chunk.group.colorAt?.(chunk.stroke),sourceColor=accent??style.ink.color,sourceGlow=accent??style.glow.color,color=outro?hexMix(sourceColor,part.color,morph):sourceColor,key=morph>=1?part.id:`${chunk.group.index}/${part.id}/${color}`;
@@ -150,13 +190,67 @@ function penWorld(group:ContinuousGroup,time:number):{point:Point;stroke:Prepare
 }
 function firstInkShape(group:ContinuousGroup,count:number,from:number,to:number):Point[]{
  const stroke=group.brush.strokes[0],points:Point[]=[];
- for(let i=0;i<count;i++){const side=i<count/2?1:-1,at=i<count/2?i/(count/2-1):(count-1-i)/(count/2-1),u=lerp(from,to,at),p=pointAt(stroke.curve,u),a=pointAt(stroke.curve,Math.max(0,u-.01)),b=pointAt(stroke.curve,Math.min(1,u+.01)),d=Math.hypot(b.x-a.x,b.y-a.y)||1,r=inkRadius(stroke,u,group.config.font.pressure)*group.config.font.penWidth;points.push(world({x:p.x-(b.y-a.y)/d*r*side,y:p.y+(b.x-a.x)/d*r*side},group));}return points;
+ for(let i=0;i<count;i++){const side=i<count/2?1:-1,at=i<count/2?i/(count/2-1):(count-1-i)/(count/2-1),u=lerp(from,to,at),p=pointAt(stroke.curve,u),a=pointAt(stroke.curve,Math.max(0,u-.01)),b=pointAt(stroke.curve,Math.min(1,u+.01)),d=Math.hypot(b.x-a.x,b.y-a.y)||1,r=(group.radiusAt?group.radiusAt(stroke,u):inkRadius(stroke,u,group.config.font.pressure))*group.config.font.penWidth;points.push(world({x:p.x-(b.y-a.y)/d*r*side,y:p.y+(b.x-a.x)/d*r*side},group));}return points;
 }
 function tracePolygon(context:CanvasRenderingContext2D,points:readonly Point[]):void{if(!points.length)return;context.beginPath();context.moveTo(points[0].x,points[0].y);for(const p of points.slice(1))context.lineTo(p.x,p.y);context.closePath();}
 
+function drawCometParticles(context:CanvasRenderingContext2D,motion:ContinuousMotion,time:number):void{
+ for(const group of motion.groups){
+  if(group.particles===false||!group.brush.strokes.length||time<0||time>group.plan.writing.end)continue;
+   const flight=motion.comets.get(group);if(!flight)continue;
+   drawCometIntro(context,flight,time,group.plan.writing.start,group.plan.writing.end,group.config.ink.color,at=>{
+    const natural=naturalInkTime(group,at),pen=strokeAt(group.brush,natural),index=group.brush.strokes.indexOf(pen.stroke),next=group.brush.strokes[index+1],visible=at>=group.plan.writing.start&&at<=group.plan.writing.end&&!(next&&natural>pen.stroke.start+pen.stroke.duration+.012&&natural<next.start);
+    return {point:world(pen.point,group),stroke:pen.stroke.id,visible,radius:(group.radiusAt?group.radiusAt(pen.stroke,pen.progress):inkRadius(pen.stroke,pen.progress,group.config.font.pressure))*group.scale*group.config.font.penWidth};
+   });
+ }
+}
+
+function ornateClock(motion:ContinuousMotion,time:number,duration:number):OrnateClock{return {time,lead:motionIntroDuration(motion.selection,duration),outroStart:motion.selection.outro==='none'?duration:duration-continuousMotionTiming.outro,duration,outro:motion.selection.outro};}
+const ornateLayoutCache=new WeakMap<ContinuousMotion,{time:number;layout:OrnateLayout}>();
+function ornateLayoutAt(motion:ContinuousMotion,time:number):OrnateLayout{
+ const previous=ornateLayoutCache.get(motion);if(previous?.time===time)return previous.layout;
+ const unit=Math.min(motion.width,motion.height)/1080,regions=motion.ornate.regions.map(region=>{
+  const group=motion.groups.find(item=>item.particles!==false&&item.index===region.index)!;
+  if(time>=group.plan.writing.end)return region;
+  const natural=naturalInkTime(group,time),first=world(strokeAt(group.brush,0).point,group),bridge=group.brush.duration*Math.min(.12,(group.plan.writing.end-group.plan.writing.start)*.15)/Math.max(.001,group.plan.writing.end-group.plan.writing.start);
+  let minX=first.x-12*unit,minY=first.y-12*unit,maxX=first.x+12*unit,maxY=first.y+12*unit;
+  for(const stroke of group.brush.strokes){
+   if(natural<=stroke.start)break;
+   let x1=Infinity,y1=Infinity,x2=-Infinity,y2=-Infinity;
+   for(const chunk of motion.chunks){if(chunk.group!==group||chunk.stroke!==stroke)continue;for(const p of visibleVertices(chunk,time)){x1=Math.min(x1,p.x-p.radius);y1=Math.min(y1,p.y-p.radius);x2=Math.max(x2,p.x+p.radius);y2=Math.max(y2,p.y+p.radius);}}
+   if(!Number.isFinite(x1))continue;
+   const enter=ease((natural-stroke.start)/Math.max(.001,Math.min(stroke.duration,bridge)));
+   minX=lerp(minX,Math.min(minX,x1),enter);minY=lerp(minY,Math.min(minY,y1),enter);maxX=lerp(maxX,Math.max(maxX,x2),enter);maxY=lerp(maxY,Math.max(maxY,y2),enter);
+  }
+  const pathProgress=region.strokeIndices.map(index=>{const stroke=group.brush.strokes[index];return brushProgress((natural-stroke.start)/stroke.duration);});
+  return {...region,bounds:{minX,minY,maxX,maxY},center:{x:(minX+maxX)/2,y:(minY+maxY)/2},pathProgress};
+ });
+ const layout={...motion.ornate,regions};ornateLayoutCache.set(motion,{time,layout});return layout;
+}
+export function drawContinuousBackdrop(context:CanvasRenderingContext2D,motion:ContinuousMotion,time:number,duration:number):void{
+ if(isOrnatePreset(motion.selection.intro))drawOrnateBackdrop(context,motion.selection.intro,ornateLayoutAt(motion,time),ornateClock(motion,time,duration));
+}
+function ornatePens(motion:ContinuousMotion,time:number):OrnatePen[]{
+ const pens:OrnatePen[]=[];
+ for(const group of motion.groups){
+  if(group.particles===false||time<group.plan.writing.start||time>=group.plan.writing.end)continue;
+  const natural=naturalInkTime(group,time),current=strokeAt(group.brush,natural),next=group.brush.strokes[group.brush.strokes.indexOf(current.stroke)+1];
+  if(next&&natural>current.stroke.start+current.stroke.duration+.012&&natural<next.start)continue;
+  const trail:Point[]=[],firstStroke=current.stroke===group.brush.strokes[0],tail=firstStroke&&time<group.plan.writing.start+.22?.22:.065;
+  for(let i=0;i<18;i++){const at=time-tail*(1-i/17);if(at<group.plan.writing.start)continue;const sample=strokeAt(group.brush,naturalInkTime(group,at));if(sample.stroke===current.stroke)trail.push(world(sample.point,group));}
+  pens.push({point:world(current.point,group),color:group.config.ink.color,index:group.index,trail,firstStroke});
+ }
+ return pens;
+}
+
 /** All tracks keep their own birth/death clock; finishing the intro clears no objects. */
 export function drawContinuousParticles(context:CanvasRenderingContext2D,motion:ContinuousMotion,time:number,duration:number):void{
- const frame=referenceFrameAt(time,duration),contain=Math.min(motion.width/1920,motion.height/1080);
+ if(isOrnatePreset(motion.selection.intro))drawOrnateForeground(context,motion.selection.intro,ornateLayoutAt(motion,time),ornateClock(motion,time,duration),ornatePens(motion,time));
+ if(motion.selection.outro!=='classic'&&motion.selection.outro!=='none'&&time>=duration-continuousMotionTiming.outro)return;
+ if(motion.selection.intro==='none')return;
+ if(isOrnatePreset(motion.selection.intro))return;
+ if(motion.selection.intro==='comet'){drawCometParticles(context,motion,time);return;}
+ const frame=referenceFrameAt(time,duration,motion.selection),contain=Math.min(motion.width/1920,motion.height/1080);
  for(const group of motion.groups){
   if(group.particles===false)continue;
   const start=world(group.brush.strokes[0].curve.points[0],group);
@@ -174,9 +268,7 @@ export function drawContinuousParticles(context:CanvasRenderingContext2D,motion:
     context.lineCap='round';context.lineJoin='round';context.strokeStyle=hexMix(color,group.config.ink.color,ease(connection));context.shadowBlur*=1-ease(connection);context.lineWidth=lerp((state.strokeWidth??3)*contain,group.brush.strokes[0].width*group.scale*group.config.font.penWidth*.63,ease(connection));context.beginPath();context.moveTo(points[0].x,points[0].y);for(const p of points.slice(1))context.lineTo(p.x,p.y);context.stroke();
    }else{
     context.translate(center.x,center.y);context.rotate(state.rotation??0);
-    if(track.kind==='ring'){const shape=referenceBubbleOutline as readonly Point[],aspect=state.aspect??1;tracePolygon(context,shape.map(p=>({x:p.x*radius,y:p.y*radius*aspect})));context.lineWidth=Math.max(.7,radius*.14);context.globalAlpha=alpha*(1-(state.fill??0)*.45);context.stroke();if((state.fill??0)>0){context.globalAlpha=alpha*(state.fill??0);context.fill();}}
-    else if(track.kind==='sparkle'){context.beginPath();context.moveTo(-radius,0);context.quadraticCurveTo(0,0,0,-radius*1.6);context.quadraticCurveTo(0,0,radius,0);context.quadraticCurveTo(0,0,0,radius*1.6);context.quadraticCurveTo(0,0,-radius,0);context.fill();}
-    else{const shape=track.outline??referenceDropletOutline;tracePolygon(context,shape.map(p=>({x:p.x*radius,y:p.y*radius*(state.aspect??1)})));context.fill();context.globalAlpha=alpha*.80;context.shadowBlur=radius*.5;context.fillStyle='#fbffff';context.beginPath();context.arc(-radius*.18,-radius*.21,radius*.36,0,TAU);context.fill();}
+    drawClassicEntryParticle(context,track.kind,{radius,color,opacity:alpha,aspect:state.aspect??1,fill:state.fill??0,outline:track.outline});
    }
    context.restore();
   }

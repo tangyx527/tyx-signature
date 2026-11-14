@@ -1,0 +1,53 @@
+/* Motion Prompt #081 · MIT License (c) 2026 Shohei Ohtaki · https://showheyohtaki.github.io/motion-prompt/#081 */
+/* The live card keeps its own content and palette; the lift, shadow and timing
+   are carried over from the lp sample and driven by hover or keyboard focus. */
+.decoration-grid {
+  padding-top: 12px;
+  padding-bottom: 22px;
+}
+.decoration-choice {
+  --card-motion-shadow: 28, 35, 51;
+  transform: translateY(0);
+  box-shadow: 0 2px 6px rgba(var(--card-motion-shadow), .08);
+  transition:
+    transform 300ms var(--motion-prompt-out, cubic-bezier(.215, .61, .355, 1)),
+    box-shadow 300ms var(--motion-prompt-out, cubic-bezier(.215, .61, .355, 1)),
+    color 300ms var(--motion-prompt-out, cubic-bezier(.215, .61, .355, 1)),
+    border-color 300ms var(--motion-prompt-out, cubic-bezier(.215, .61, .355, 1)),
+    background-color 300ms var(--motion-prompt-out, cubic-bezier(.215, .61, .355, 1));
+}
+:root[data-theme='dark'] .decoration-choice {
+  --card-motion-shadow: 0, 0, 0;
+}
+@media (hover: hover) and (pointer: fine) {
+  .decoration-choice:hover:not(:disabled) {
+    z-index: 1;
+    transform: translateY(-2px);
+    box-shadow: 0 4px 10px rgba(var(--card-motion-shadow), .10);
+  }
+}
+/* Touch keeps its existing press feedback without a sticky hover lift. */
+@media (hover: none), (pointer: coarse) {
+  .decoration-choice:hover:not(:disabled) {
+    transform: translateY(0);
+    box-shadow: 0 2px 6px rgba(var(--card-motion-shadow), .08);
+  }
+  .decoration-choice:active:not(:disabled) {
+    transform: scale(.98);
+  }
+}
+.decoration-choice:focus-visible:not(:disabled) {
+  z-index: 1;
+  transform: translateY(-2px);
+  box-shadow: 0 4px 10px rgba(var(--card-motion-shadow), .10);
+}
+@media (prefers-reduced-motion: reduce) {
+  .decoration-choice,
+  .decoration-choice:hover:not(:disabled),
+  .decoration-choice:focus-visible:not(:disabled),
+  .decoration-choice:active:not(:disabled) {
+    transform: none;
+    transition: none;
+    box-shadow: 0 2px 6px rgba(var(--card-motion-shadow), .08);
+  }
+}

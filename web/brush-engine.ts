@@ -5,7 +5,7 @@ import type {SignatureConfig} from '../src/config';
 import type {Scheme} from './model';
 
 export type InkSample=Point&{radius:number;u:number};
-export type PreparedStroke=BrushStroke&{samples:InkSample[]};
+export type PreparedStroke=BrushStroke&{samples:InkSample[];fixedInk?:boolean};
 export type PreparedBrush={strokes:PreparedStroke[];duration:number;box:Box;guide:ReturnType<typeof buildBrush>['guide']};
 export {brushProgress};
 
@@ -110,6 +110,8 @@ export function visibleSamples(stroke:PreparedStroke,progress:number,pressure:nu
  if(progress<=0)return [];
  if(progress>=1)return stroke.samples;
  const cut=Math.floor(progress*(stroke.samples.length-1)),samples=stroke.samples.slice(0,cut+1);
- samples.push({...pointAt(stroke.curve,progress),u:progress,radius:inkRadius(stroke,progress,pressure)});
+ const next=Math.min(cut+1,stroke.samples.length-1),a=stroke.samples[cut],b=stroke.samples[next],fraction=(progress-a.u)/(b.u-a.u||1);
+ const radius=stroke.fixedInk?a.radius+(b.radius-a.radius)*fraction:inkRadius(stroke,progress,pressure);
+ samples.push({...pointAt(stroke.curve,progress),u:progress,radius});
  return samples;
 }

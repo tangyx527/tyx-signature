@@ -1,18 +1,24 @@
 import {z} from 'zod';
 import type {SignatureConfig} from '../src/config';
 import defaultDesign from './default-design.json';
-import {STORED_DECORATION_IDS} from './decoration-catalog';
+import {STORED_DECORATION_IDS,isDecorationId} from './decoration-catalog';
+import {traceSchema} from './tracing';
+import {introPresets,outroPresets} from './animation-catalog';
+import {ornatePresets} from './ornate-types';
 
 const color = z.string().regex(/^#[\da-f]{6}$/i, '请选择有效的颜色');
 const finite = (min:number,max:number) => z.number().finite().min(min).max(max);
+const retiredOutroIds=new Set<string>(['stardust','ripple',...ornatePresets.map(preset=>preset.id)]);
 export const fontFamilies = [
   {id:'tyx-brush',name:'TYX Brush · 原作连笔'},
 ] as const;
 export const personSchema = z.object({
   name:z.string().max(40,'最多输入 40 个字符'),
+  signatureSource:z.enum(['typed','trace']).default('typed'),
+  trace:traceSchema.optional(),
   // Retain old values when reading saved designs; the website uses the authored glyphs directly.
   scheme:z.enum(['classic','loop','sweep']).default('classic'),
-  position:z.object({x:finite(-.45,.45),y:finite(-.45,.45),scale:finite(.45,1.5),rotation:finite(-20,20)}),
+  position:z.object({x:finite(-.45,.45),y:finite(-.45,.45),scale:finite(.45,3),rotation:finite(-20,20)}),
   font:z.object({family:z.enum(['tyx-brush','tyx-soft']).default('tyx-brush'),size:finite(48,320),penWidth:finite(.5,2),pressure:finite(0,1),initialScale:finite(1,1.6),initialOffsetX:finite(-120,120),initialOffsetY:finite(-120,120),terminalLength:finite(.5,1.8)}),
   ink:z.object({color}),
   glow:z.object({enabled:z.boolean(),color,strength:finite(0,1),radius:finite(0,48)}),
@@ -24,14 +30,23 @@ export const webSchema = z.object({
   version:z.literal(2),
   mode:z.enum(['single','couple']),
   people:z.tuple([personSchema,personSchema]),
-  canvas:z.object({aspect:z.enum(['landscape','portrait','square']),background:color,transparent:z.boolean().default(false)}),
+  canvas:z.object({aspect:z.enum(['landscape','portrait','square']),background:color,transparent:z.boolean().default(false),fps:z.union([z.literal(30),z.literal(60)]).default(30)}),
   timing:z.object({duration:finite(3,15),writingRatio:finite(.35,.8),hold:finite(.2,3)}),
-  animation:z.object({introOutroEnabled:z.boolean().default(true)}).strict().default({introOutroEnabled:true}),
+  animation:z.object({
+    introOutroEnabled:z.boolean().default(true),
+    intro:z.enum(introPresets.map(preset=>preset.id)).default('classic'),
+    // Retired effects fall back without discarding the rest of an existing saved design.
+    outro:z.preprocess(value=>typeof value==='string'&&retiredOutroIds.has(value)?'classic':value,z.enum(outroPresets.map(preset=>preset.id))).default('classic'),
+  }).strict().default({introOutroEnabled:true,intro:'classic',outro:'classic'}),
   effects:z.object({sparkles:z.boolean(),hearts:z.boolean(),intensity:finite(0,1)}),
   audio:z.object({start:finite(0,3600),volume:finite(0,1),fadeIn:finite(0,3),fadeOut:finite(0,3)}),
 }).strict().superRefine((c,ctx)=>{
   for(let i=0;i<(c.mode==='couple'?2:1);i++){
-    const name=c.people[i].name,prefix=c.mode==='couple'?`${i===0?'第一':'第二'}位：`:'';
+    const person=c.people[i],name=person.name,prefix=c.mode==='couple'?`${i===0?'第一':'第二'}位：`:'';
+    if(person.signatureSource==='trace'){
+      if(!person.trace?.strokes.some(stroke=>stroke.points.length>0))ctx.addIssue({code:'custom',path:['people',i,'trace'],message:`${prefix}请先描写签名并完成应用`});
+      continue;
+    }
     if(!name||!/[a-z]/i.test(name))ctx.addIssue({code:'custom',path:['people',i,'name'],message:`${prefix}至少输入一个英文字母`});
     else if(!/^[A-Za-z '\-]+$/.test(name))ctx.addIssue({code:'custom',path:['people',i,'name'],message:`${prefix}请使用英文字母、空格、英文撇号或连字符`});
   }
@@ -55,15 +70,15 @@ function simplifyDesign(config:WebConfig):WebConfig{
     person.scheme='classic';
     person.font.family='tyx-brush';
     // Fold the previous two size controls into the sole scale value once.
-    person.position.scale=clamp(person.position.scale*person.font.size/240,.45,1.5);
+    person.position.scale=clamp(person.position.scale*person.font.size/240,.45,3);
     person.font.size=240;
     person.font.pressure=.85;
     person.font.initialScale=1.15;
     person.font.initialOffsetX=0;
     person.font.initialOffsetY=0;
     person.font.terminalLength=1;
-    person.position.rotation=-6;
-    if(['cat','rabbit','bow'].includes(person.decoration.id))person.decoration.id='none';
+    person.position.rotation=person.signatureSource==='trace'?0:-6;
+    if(!isDecorationId(person.decoration.id))person.decoration.id='none';
     person.decoration.action='wink';
     person.decoration.earFold=true;
     person.decoration.playful=true;
@@ -99,7 +114,7 @@ export function asBrushConfig(person:PersonConfig,web:WebConfig):SignatureConfig
   const legacyDecoration=['sun','cat','heart','star','none'].includes(person.decoration.id)?person.decoration.id as SignatureConfig['decoration']['id']:'none';
   return {schemaVersion:1,name:person.name,font:{...font,id:'tyx-brush',weight:400},ink:person.ink,glow:person.glow,
     decoration:{...person.decoration,id:legacyDecoration,offsetX:0,offsetY:0},underline:person.underline,comet:person.comet,
-    timing:{mode:'duration',durationSeconds:web.timing.duration,speed:1},canvas:{...canvasSize(web.canvas.aspect),fps:30},
+    timing:{mode:'duration',durationSeconds:web.timing.duration,speed:1},canvas:{...canvasSize(web.canvas.aspect),fps:web.canvas.fps},
     background:{mode:web.canvas.transparent?'transparent':'solid',color:web.canvas.background},seed:7};
 }
 export const clamp=(n:number,min:number,max:number)=>Math.max(min,Math.min(max,n));

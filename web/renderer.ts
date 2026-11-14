@@ -1,12 +1,13 @@
 import {pointAt,pointBounds,sampleCubic,union,type Box,type Curve,type Point} from '../src/geometry';
 import {blink} from '../src/motion';
-import {decorationPaths} from '../src/decorations';
 import {asBrushConfig,canvasSize,clamp,defaultWebConfig,type PersonConfig,type WebConfig} from './model';
 import {appendCapsules,brushProgress,buildWebBrush,joinCurves,strokeAt,visibleSamples,type InkSample,type PreparedBrush,type PreparedStroke} from './brush-engine';
 import {cuteDecorationPaths,catEarAnchors} from './cute-elements';
-import {continuousMotionTiming,prepareContinuousMotion,drawContinuousInk,drawContinuousParticles,type ContinuousMotion,type ContinuousGroup} from './continuous-motion';
+import {continuousMotionTiming,motionIntroDuration,prepareContinuousMotion,drawContinuousBackdrop,drawContinuousInk,drawContinuousParticles,type ContinuousMotion,type ContinuousGroup} from './continuous-motion';
 import {isDecorationId} from './decoration-catalog';
 import {referenceDecorationPaths} from './reference-decorations';
+import {buildTraceBrush,traceSampleRadius} from './tracing';
+import {resolveMotionSelection} from './animation-catalog';
 
 type Phase={start:number;end:number};
 type Plan={lead:Phase;writing:Phase;returning:Phase;underline:Phase;leaving:Phase;decoration:Phase;reaction:Phase;wink:Phase;outro:Phase;activeEnd:number;introOutroEnabled:boolean};
@@ -33,12 +34,12 @@ function effectivePerson(source:PersonConfig,enabled:boolean):PersonConfig{
  person.decoration={...person.decoration,action:'wink',earFold:true,playful:true};
  person.underline={enabled:false,lift:false};
  person.comet={...person.comet,enabled:false,size:1.4};
- person.position.rotation=-6;
+ person.position.rotation=person.signatureSource==='trace'?0:-6;
  return person;
 }
 function makePlan(config:WebConfig,person:PersonConfig):Plan{
- const enabled=config.animation.introOutroEnabled,lead=enabled?continuousMotionTiming.intro:0,outroStart=enabled?config.timing.duration-continuousMotionTiming.outro:config.timing.duration;
- const coreDuration=Math.max(.01,outroStart-lead),hold=enabled?0:Math.min(config.timing.hold,Math.max(1/30,coreDuration-1.4)),available=coreDuration-hold;
+ const selection=resolveMotionSelection(config.animation),enabled=selection.intro!=='none'||selection.outro!=='none',lead=motionIntroDuration(selection,config.timing.duration),outroStart=selection.outro==='none'?config.timing.duration:config.timing.duration-continuousMotionTiming.outro;
+ const coreDuration=Math.max(.01,outroStart-lead),hold=selection.outro==='none'?Math.min(config.timing.hold,Math.max(1/30,coreDuration-1.4)):0,available=coreDuration-hold;
  const ornament=config.people.slice(0,config.mode==='couple'?2:1).some(p=>p.decoration.id!=='none'&&isDecorationId(p.decoration.id));
  // Use the active interval for writing followed by ornament drawing and reaction.
  const extra=ornament?(enabled?Math.min(.78,available*.28):available*.32):0,writingDuration=available-extra,writing={start:lead,end:lead+writingDuration};
@@ -60,7 +61,7 @@ function flattenPath(data:string):Curve{
  }
  return joinCurves(curves);
 }
-const ornamentSources:Record<string,readonly (DecoStroke&{d?:string})[]>={sun:decorationPaths.sun,heart:decorationPaths.heart,star:decorationPaths.star,'cat-ears':cuteDecorationPaths['cat-ears'],dog:cuteDecorationPaths.dog,paw:cuteDecorationPaths.paw,...referenceDecorationPaths};
+const ornamentSources:Record<string,readonly (DecoStroke&{d?:string})[]>={'cat-ears':cuteDecorationPaths['cat-ears'],dog:cuteDecorationPaths.dog,paw:cuteDecorationPaths.paw,...referenceDecorationPaths};
 const ornamentCache=new Map<string,DecoStroke[]>();
 function ornamentStrokes(id:string):DecoStroke[]{
  const cached=ornamentCache.get(id);if(cached)return cached;
@@ -91,16 +92,17 @@ function prepareDecoration(person:PersonConfig,brush:PreparedBrush):PreparedDeco
 }
 const brushCache=new Map<string,PreparedBrush>();
 function prepareBrush(person:PersonConfig,config:WebConfig):PreparedBrush{
- const key=person.name,cached=brushCache.get(key);if(cached){brushCache.delete(key);brushCache.set(key,cached);return cached;}
+ const traced=person.signatureSource==='trace'&&person.trace;
+ const key=traced?'trace:'+JSON.stringify(traced):'typed:'+person.name,cached=brushCache.get(key);if(cached){brushCache.delete(key);brushCache.set(key,cached);return cached;}
  const referencePerson={...person,font:{...person.font,penWidth:1}};
- const brush=buildWebBrush(asBrushConfig(referencePerson,config),'classic','tyx-brush');brushCache.set(key,brush);if(brushCache.size>12)brushCache.delete(brushCache.keys().next().value!);return brush;
+ const brush=traced?buildTraceBrush(traced):buildWebBrush(asBrushConfig(referencePerson,config),'classic','tyx-brush');brushCache.set(key,brush);if(brushCache.size>12)brushCache.delete(brushCache.keys().next().value!);return brush;
 }
 
 export function prepareScene(input:WebConfig):PreparedScene{
  const config=structuredClone(input),{width,height}=canvasSize(config.canvas.aspect),count=config.mode==='couple'?2:1,warnings:string[]=[],hitAreas:HitArea[]=[];
  const people:PersonScene[]=config.people.slice(0,count).map((source,index)=>{
   const person=effectivePerson(source,config.animation.introOutroEnabled),brush=prepareBrush(person,config),b=brush.box,size=240,w=b.maxX-b.minX,h=b.maxY-b.minY,plan=makePlan(config,person),decoration=prepareDecoration(person,brush);
-  const anchor={x:(b.minX+b.maxX)/2,y:(b.minY+b.maxY)/2},angle=-6*Math.PI/180;
+  const anchor={x:(b.minX+b.maxX)/2,y:(b.minY+b.maxY)/2},angle=person.position.rotation*Math.PI/180;
   // This reference is only a function of fixed glyph geometry and the artboard.
   // A size change scales around the ink center; ornaments/toggles never recenter it.
   const reference=expand(b,size*.62),rotated=pointBounds(corners(reference).map(p=>rotate(p,angle))),slotWidth=width*(count===2?.45:.88),slotHeight=height*.80;
@@ -121,8 +123,9 @@ export function prepareScene(input:WebConfig):PreparedScene{
   if(group.bounds.minX<8||group.bounds.minY<8||group.bounds.maxX>width-8||group.bounds.maxY>height-8)warnings.push(`第 ${index+1} 组接近画布边缘，可缩小一点或拖回画面。`);
   return group;
  });
- const editingTime=config.animation.introOutroEnabled?Math.max(0,config.timing.duration-continuousMotionTiming.outro):config.timing.duration;
- const continuous=config.animation.introOutroEnabled?prepareContinuousMotion(people.flatMap(group=>{const ornament=continuousDecoration(group,width,height);return ornament?[group,ornament]:[group];}),width,height):null;
+ const selection=resolveMotionSelection(config.animation),enabled=selection.intro!=='none'||selection.outro!=='none';
+ const editingTime=selection.outro==='none'?config.timing.duration:Math.max(0,config.timing.duration-continuousMotionTiming.outro);
+ const continuous=enabled?prepareContinuousMotion(people.flatMap(group=>{const ornament=continuousDecoration(group,width,height),ink:ContinuousGroup=group.config.signatureSource==='trace'?{...group,radiusAt:traceSampleRadius}:group;return ornament?[ink,ornament]:[ink];}),width,height,selection):null;
  return {width,height,duration:config.timing.duration,editingTime,hitAreas,warnings,people,continuous,config};
 }
 export function hitTest(scene:PreparedScene,x:number,y:number):Hit|null{
@@ -204,6 +207,10 @@ function decorationMesh(d:PreparedDecoration):DecorationMesh{
 const around=(p:Point,anchor:Point,angle:number):Point=>{const q=rotate({x:p.x-anchor.x,y:p.y-anchor.y},angle);return {x:q.x+anchor.x,y:q.y+anchor.y};};
 const beat=(u:number)=>u<=0||u>=1?0:Math.sin(Math.PI*u)**2;
 const spring=(u:number)=>u<=0||u>=1?0:Math.sin(TAU*u)*Math.sin(Math.PI*u)**2;
+const expressiveFaces=new Set([
+ 'face-laughing','face-confused','face-shocked','face-angry','face-hurt','face-crying',
+ 'face-speechless','face-smug','face-in-love','face-excited','face-wink','face-dizzy',
+]);
 const eyeCenters=new WeakMap<PreparedDecoration,Map<string,Point>>();
 function eyeCenter(d:PreparedDecoration,id:string):Point|undefined{
  let centers=eyeCenters.get(d);if(!centers){centers=new Map();for(const stroke of d.strokes){if(!stroke.id.includes('eye'))continue;const bounds=stroke.curve?pointBounds(stroke.curve.points):null,center=stroke.eye??(bounds?{x:(bounds.minX+bounds.maxX)/2,y:(bounds.minY+bounds.maxY)/2}:null);if(center)centers.set(stroke.id,center);}eyeCenters.set(d,centers);}return centers.get(id);
@@ -211,6 +218,45 @@ function eyeCenter(d:PreparedDecoration,id:string):Point|undefined{
 function reactionPoint(group:PersonScene,id:string,p:Point,time:number):Point{
  const phase=group.plan.reaction;if(time<=phase.start||time>=phase.end||phase.end<=phase.start)return p;
  const u=(time-phase.start)/(phase.end-phase.start),kind=group.config.decoration.id,left=id.startsWith('left'),side=left?1:-1;
+ if(kind.startsWith('zodiac-')){
+  const pulse=beat(u),scale=1+.03*pulse;
+  return around({x:p.x*scale,y:p.y*scale-1.2*pulse},{x:0,y:0},.018*spring(u));
+ }
+ if(kind.startsWith('pet-')||expressiveFaces.has(kind)){
+  const pulse=beat(u),wiggle=spring(u),eye=id.includes('eye')?eyeCenter(group.decoration,id):undefined;
+  let q=p;
+  // Preserve star and heart silhouettes; they pulse instead of being flattened into a blink.
+  if(eye&&kind!=='face-in-love'&&kind!=='face-excited'&&kind!=='face-dizzy'&&!(kind==='face-wink'&&id.startsWith('right'))){
+   q={x:q.x,y:eye.y+(q.y-eye.y)*Math.max(.12,1-blink(time,phase))};
+  }
+  if(kind.startsWith('pet-')){
+   if(id.includes('ear'))q=around(q,left?{x:-30,y:-24}:{x:30,y:-24},side*.075*spring(clamp((u-(left?0:.1))/.88,0,1)));
+   if(kind==='pet-penguin'||kind==='pet-chick')return around({x:q.x,y:q.y-2.4*pulse},{x:0,y:29},.035*wiggle);
+   if(kind==='pet-frog'&&id.includes('mouth'))q={x:q.x,y:15+(q.y-15)*(1+.06*pulse)};
+   if(kind==='pet-pig'||kind==='pet-koala')return around({x:q.x,y:q.y+1.2*pulse},{x:0,y:27},.03*pulse);
+   if(kind==='pet-hedgehog'&&id.includes('blush'))q={x:q.x,y:q.y-.9*pulse};
+   return around(q,{x:0,y:26},-.045*wiggle);
+  }
+  if(kind==='face-laughing')return {x:q.x,y:q.y-2.8*pulse};
+  if(kind==='face-confused'){
+   if(id.includes('question'))q={x:q.x+.8*wiggle,y:q.y-1.7*pulse};
+   return around(q,{x:0,y:18},.075*pulse);
+  }
+  if(kind==='face-shocked')return {x:q.x*(1+.025*pulse),y:q.y*(1+.055*pulse)-1.4*pulse};
+  if(kind==='face-angry')return {x:q.x+1.2*wiggle,y:q.y-1.2*pulse};
+  if(kind==='face-hurt'||kind==='face-crying'){
+   if(id.includes('tear')||id.includes('sweat'))q={x:q.x+.5*wiggle,y:q.y+4*pulse};
+   return around(q,{x:0,y:20},(kind==='face-crying'?.035:.025)*wiggle);
+  }
+  if(kind==='face-speechless')return {x:q.x+.7*wiggle,y:q.y+.8*pulse};
+  if(kind==='face-smug')return around(q,{x:0,y:20},-.055*pulse);
+  if(kind==='face-in-love'||kind==='face-excited'){
+   if(eye){const scale=1+.065*pulse;q={x:eye.x+(q.x-eye.x)*scale,y:eye.y+(q.y-eye.y)*scale};}
+   return {x:q.x,y:q.y-1.8*pulse};
+  }
+  if(kind==='face-wink')return around(q,{x:0,y:20},-.045*pulse);
+  return around({x:q.x+1.1*wiggle,y:q.y},{x:0,y:18},.065*wiggle);
+ }
  const eye=id.includes('right')?eyeCenter(group.decoration,id):undefined;if(eye)p={x:p.x,y:eye.y+(p.y-eye.y)*Math.max(.12,1-blink(time,phase))};
  if(kind==='cat-ears'&&id.includes('ear')){const anchor=left?group.decoration.earRoots!.left:group.decoration.earRoots!.right;return around(p,anchor,side*.22*spring(clamp((u-(left?0:.13))/.85,0,1)));}
  if(kind==='dog'||kind==='puppy-face'){let q=p;if(id.includes('floppy-ear')||id.includes('ear'))q=around(q,left?{x:-34,y:-22}:{x:38,y:-20},side*.20*spring(clamp((u-(left?0:.11))/.86,0,1)));return around(q,{x:0,y:16},-.055*beat(u));}
@@ -219,8 +265,6 @@ function reactionPoint(group:PersonScene,id:string,p:Point,time:number):Point{
  if(kind==='paw-wave'||kind==='paw-striped'||kind==='paw-beans')return around(p,{x:0,y:48},.12*spring(u));
  if(kind.startsWith('face-')&&id.includes('sweat'))return {x:p.x+.6*beat(u),y:p.y+3*beat(u)};
  if(kind==='paw'){const press=beat(u);return {x:p.x*(1+.065*press),y:55+(p.y-55)*(1-.10*press)+3*press};}
- if(kind==='heart'){const pulse=beat(u);return {x:p.x*(1+.055*pulse),y:p.y*(1+.08*pulse)};}
- if(kind==='star'){const pulse=beat(u);return around({x:p.x*(1+.05*pulse),y:p.y*(1+.05*pulse)},{x:0,y:0},.065*spring(u));}
  return p;
 }
 export function decorationPoint(scene:PreparedScene,index:0|1,strokeId:string,u:number,time:number):Point|null{
@@ -276,6 +320,6 @@ export function renderScene(canvas:HTMLCanvasElement,scene:PreparedScene,time:nu
  if(canvas.width!==scene.width)canvas.width=scene.width;if(canvas.height!==scene.height)canvas.height=scene.height;const context=canvas.getContext('2d',{alpha:true});if(!context)throw new Error('当前浏览器无法创建签名画布，请换用系统浏览器。');const t=complete?scene.editingTime:clamp(Number.isFinite(time)?time:0,0,scene.duration);
  const enabled=scene.config.animation.introOutroEnabled;
  context.setTransform(1,0,0,1,0,0);context.globalAlpha=1;context.globalCompositeOperation='source-over';context.shadowBlur=0;context.clearRect(0,0,scene.width,scene.height);if(!scene.config.canvas.transparent){context.fillStyle=scene.config.canvas.background;context.fillRect(0,0,scene.width,scene.height);}
- if(enabled&&scene.continuous){drawContinuousInk(context,scene.continuous,t,scene.duration);if(!complete)drawContinuousParticles(context,scene.continuous,t,scene.duration);return;}
+ if(enabled&&scene.continuous){if(!complete)drawContinuousBackdrop(context,scene.continuous,t,scene.duration);drawContinuousInk(context,scene.continuous,t,scene.duration,complete);if(!complete)drawContinuousParticles(context,scene.continuous,t,scene.duration);return;}
  for(const group of scene.people){context.save();context.translate(group.tx,group.ty);context.rotate(group.angle);context.scale(group.scale,group.scale);drawBrush(context,group,t);context.restore();drawDecoration(context,scene,group,t);}
 }

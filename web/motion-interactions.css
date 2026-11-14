@@ -1,0 +1,23 @@
+/* Motion Prompt #085 · MIT License (c) 2026 Shohei Ohtaki · https://showheyohtaki.github.io/motion-prompt/#085 */
+button.button,
+button.play-button,
+button.editor-tab,
+button.mode-option,
+button.person-tab,
+button.format-option,
+button.decoration-category,
+button.decoration-clear,
+button.appearance-option,
+button.complete-preview-button,
+a.button[download] {
+  --press-ripple-color: var(--ink);
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+}
+.button.primary, .play-button { --press-ripple-color: var(--on-accent); }
+.appearance-option[aria-pressed='true'] { --press-ripple-color: var(--on-accent); }
+.press-ripple { position: absolute; z-index: -1; border-radius: 9999px; background: var(--press-ripple-color, var(--ink)); pointer-events: none; opacity: 0; transform: scale(0); }
+@media (prefers-reduced-motion: reduce) {
+  .press-ripple { display: none; }
+}

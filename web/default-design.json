@@ -4,6 +4,7 @@
   "people": [
     {
       "name": "Taiyang",
+      "signatureSource": "typed",
       "scheme": "classic",
       "position": {
         "x": 0.03098053332496639,
@@ -51,6 +52,7 @@
     },
     {
       "name": "Yuliang",
+      "signatureSource": "typed",
       "scheme": "classic",
       "position": {
         "x": -0.034334763948497854,
@@ -78,7 +80,7 @@
         "radius": 14
       },
       "decoration": {
-        "id": "sun",
+        "id": "none",
         "scale": 0.7,
         "offsetX": 0.07582260371959945,
         "offsetY": 0.10705751155010357,
@@ -99,7 +101,8 @@
   ],
   "canvas": {
     "aspect": "landscape",
-    "background": "#000000"
+    "background": "#000000",
+    "fps": 30
   },
   "timing": {
     "duration": 5,
@@ -107,7 +110,9 @@
     "hold": 0.9
   },
   "animation": {
-    "introOutroEnabled": true
+    "introOutroEnabled": true,
+    "intro": "classic",
+    "outro": "classic"
   },
   "effects": {
     "sparkles": false,

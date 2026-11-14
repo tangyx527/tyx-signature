@@ -34,3 +34,9 @@ Phosphor Icons 2.1.1, regular weight — MIT
 Copyright (c) 2023 Phosphor Icons
 License: licenses/Phosphor-Icons-MIT.txt
 Source: https://github.com/phosphor-icons/core
+
+Motion Prompt — MIT
+Interface motion #055, #057, #081, #085 and ui/lp easing helpers
+Copyright (c) 2026 Shohei Ohtaki
+License: licenses/Motion-Prompt-MIT.txt
+Source: https://github.com/showheyohtaki/motion-prompt

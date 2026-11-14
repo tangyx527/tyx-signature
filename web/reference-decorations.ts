@@ -1,49 +1,16 @@
-import {sampleCubic,type Box,type Curve,type Point} from '../src/geometry';
+import type {Box} from '../src/geometry';
 import type {CuteDecorationPath} from './cute-elements';
+import {curve,oval,line,shape,eye,pink,blue} from './ornament-drawing';
+import {expressionDecorationPaths} from './expression-decorations';
+import {petDecorationPaths} from './pet-decorations';
+import {zodiacAriesVirgoPaths} from './zodiac-aries-virgo';
+import {zodiacLibraPiscesPaths} from './zodiac-libra-pisces';
 
 export type ReferenceDecorationPath=Omit<CuteDecorationPath,'profile'>&{
   profile?:'brush'|'taper'|'round';
   color?:string;
   filled?:boolean;
 };
-type Cubic=readonly [number,number,number,number,number,number,number,number];
-
-/** One continuous pen movement. Disconnected marks are always separate entries below. */
-function curve(...segments:Cubic[]):Curve{
-  const points:Curve['points']=[];
-  let length=0;
-  for(const segment of segments){
-    const sampled=sampleCubic(
-      {x:segment[0],y:segment[1]},{x:segment[2],y:segment[3]},
-      {x:segment[4],y:segment[5]},{x:segment[6],y:segment[7]},40,
-    );
-    for(const point of sampled.points){
-      const previous=points.at(-1),distance=previous?Math.hypot(point.x-previous.x,point.y-previous.y):0;
-      if(previous&&distance<1e-8)continue;
-      length+=distance;
-      points.push({x:point.x,y:point.y,length});
-    }
-  }
-  return {points,length};
-}
-
-function oval(x:number,y:number,rx:number,ry:number,degrees=0):Curve{
-  const k=.55228475;
-  const result=curve(
-    [rx,0,rx,k*ry,k*rx,ry,0,ry],
-    [0,ry,-k*rx,ry,-rx,k*ry,-rx,0],
-    [-rx,0,-rx,-k*ry,-k*rx,-ry,0,-ry],
-    [0,-ry,k*rx,-ry,rx,-k*ry,rx,0],
-  );
-  const angle=degrees*Math.PI/180,cos=Math.cos(angle),sin=Math.sin(angle);
-  return {...result,points:result.points.map(point=>({
-    x:x+point.x*cos-point.y*sin,y:y+point.x*sin+point.y*cos,length:point.length,
-  }))};
-}
-const line=(id:string,width:number,...segments:Cubic[]):ReferenceDecorationPath=>({id,width,profile:'round',curve:curve(...segments)});
-const shape=(id:string,path:Curve,color?:string):ReferenceDecorationPath=>({id,width:6,profile:'round',curve:path,filled:true,...(color?{color}:{})});
-const eye=(id:string,x:number,y:number,width=9):ReferenceDecorationPath=>({id,width,profile:'round',eye:{x,y}});
-const pink='#F5AFC7',blue='#A3D8ED';
 
 // The raised paw has an open wrist. Its four soft toes are one outline, not circles joined with straight bridges.
 const raisedPaw=curve(
@@ -85,6 +52,10 @@ const squeezedEyes=(y=6):ReferenceDecorationPath[]=>[
 
 /** Reference-inspired original pen paths, in the same radius-50 coordinate system as the signature ornaments. */
 export const referenceDecorationPaths:Record<string,ReferenceDecorationPath[]>={
+  ...expressionDecorationPaths,
+  ...petDecorationPaths,
+  ...zodiacAriesVirgoPaths,
+  ...zodiacLibraPiscesPaths,
   'paw-wave':[
     pawOutline(),
   ],

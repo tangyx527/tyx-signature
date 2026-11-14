@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {defaultPerson,defaultWebConfig,validateConfig,parseConfigFile,loadConfig,saveConfig,STORAGE_KEY,canvasSize,asBrushConfig} from '../web/model';
 import defaultDesign from '../web/default-design.json';
 import {ACTIVE_DECORATION_IDS} from '../web/decoration-catalog';
+import {introPresets,outroPresets,resolveMotionSelection} from '../web/animation-catalog';
 
 test('website config preserves two independent names and colors through storage',()=>{
   const c=defaultWebConfig();c.mode='couple';c.people[0].name='LiXin';c.people[1].name='TYX';c.people[1].ink.color='#ff88bb';
@@ -72,11 +73,11 @@ test('transparency round trips through files and storage while retaining names, 
 
 test('every active decoration survives independent-person file and storage round trips',()=>{
   for(const id of ACTIVE_DECORATION_IDS){
-    const c=defaultWebConfig();c.people[0].decoration.id=id;c.people[1].decoration.id='heart';
+    const c=defaultWebConfig();c.people[0].decoration.id=id;c.people[1].decoration.id='paw';
     let text='';saveConfig({setItem:(_key,value)=>{text=value;}},c);
     const restored=loadConfig({getItem:key=>key===STORAGE_KEY?text:null}).config;
     assert.equal(restored.people[0].decoration.id,id);
-    assert.equal(restored.people[1].decoration.id,'heart');
+    assert.equal(restored.people[1].decoration.id,'paw');
     assert.deepEqual(parseConfigFile(text),restored);
   }
   const invalid=defaultWebConfig();
@@ -84,12 +85,39 @@ test('every active decoration survives independent-person file and storage round
 });
 
 test('legacy storage preserves authored names, duration, animation choice, colors and supported ornaments',()=>{
-  const c=defaultWebConfig();c.people[0].name='Tangyanxing';c.people[1].decoration.id='dog';
+  const c=defaultWebConfig();c.people[0].name='Tangyanxing';c.people[1].decoration.id='puppy-face';
   c.animation.introOutroEnabled=false;c.canvas.background='#030608';c.people[0].glow.color='#6de9de';
   for(const key of ['tyx-signature.website.v6','tyx-signature.website.v5','tyx-signature.website.v2']){
     const restored=loadConfig({getItem:requested=>requested===key?JSON.stringify(c):null});
     assert.equal(restored.warning,undefined);
     assert.deepEqual(restored.config,c);
+  }
+});
+
+test('older animation switches migrate without re-enabling effects or replacing the authored design',()=>{
+  for(const enabled of [true,false]){
+    const original=defaultWebConfig();original.people[0].name='LiXin';original.canvas.background='#7451a3';original.timing.duration=7;
+    const legacy={...original,animation:{introOutroEnabled:enabled}};
+    const imported=parseConfigFile(JSON.stringify(legacy));
+    assert.deepEqual(imported,{...original,animation:{introOutroEnabled:enabled,intro:'classic',outro:'classic'}});
+    assert.deepEqual(resolveMotionSelection(imported.animation),enabled?{intro:'classic',outro:'classic'}:{intro:'none',outro:'none'});
+    const loaded=loadConfig({getItem:key=>key===STORAGE_KEY?JSON.stringify(legacy):null});
+    assert.equal(loaded.warning,undefined);assert.deepEqual(loaded.config,imported);
+  }
+});
+
+test('independent opening and ending choices round trip through files and browser storage',()=>{
+  for(const intro of introPresets)for(const outro of outroPresets){
+    const config=defaultWebConfig();config.animation={introOutroEnabled:intro.id!=='none'||outro.id!=='none',intro:intro.id,outro:outro.id};
+    config.people[0].position.x=.11;config.people[1].ink.color='#ee88bb';
+    let saved='';saveConfig({setItem:(_key,value)=>{saved=value;}},config);
+    assert.deepEqual(parseConfigFile(saved),config,`${intro.id}/${outro.id}`);
+    assert.deepEqual(loadConfig({getItem:key=>key===STORAGE_KEY?saved:null}).config,config);
+    assert.deepEqual(resolveMotionSelection(config.animation),{intro:intro.id,outro:outro.id});
+  }
+  const config=defaultWebConfig();
+  for(const animation of [{...config.animation,intro:'unknown'},{...config.animation,outro:'unknown'},{...config.animation,intro:null},{...config.animation,outro:1}]){
+    assert.throws(()=>parseConfigFile(JSON.stringify({...config,animation})));
   }
 });
 
@@ -102,6 +130,37 @@ test('legacy size and removed options normalize once without moving either perso
   assert.equal(normalized.people[0].decoration.id,'none');assert.equal(normalized.people[1].decoration.id,'none');
   assert.deepEqual(parseConfigFile(JSON.stringify(normalized)),normalized);
   assert.equal(c.people[0].font.size,120);
+});
+
+test('retired ornaments become none without replacing the authored design during import or storage migration',()=>{
+  const retired=[
+    'cat','rabbit','bow','dog','sun','heart','star',
+    'accent-moon','accent-saturn','accent-shooting-star','accent-cloud',
+    'accent-lightning','accent-ribbon','accent-crown','accent-clover',
+    'accent-flower','accent-music','accent-envelope','accent-candy',
+  ] as const;
+  for(const id of retired){
+    const authored=defaultWebConfig();
+    authored.mode='couple';authored.people[0].name='Li Xin';authored.people[1].name='Qingzhi';
+    authored.people[0].ink.color='#15d7b7';authored.people[1].ink.color='#f4abc9';
+    authored.people[0].position={x:.12,y:-.08,scale:1.2,rotation:-6};
+    authored.people[1].position={x:-.06,y:.09,scale:.85,rotation:-6};
+    authored.people[0].decoration={...authored.people[0].decoration,id,scale:1.1,offsetX:.07,offsetY:-.04};
+    authored.people[1].decoration.id='puppy-face';authored.people[1].decoration.scale=.9;
+    authored.people[0].font.penWidth=1.25;authored.canvas.background='#e6e6e6';
+    authored.timing.duration=7.5;authored.animation.introOutroEnabled=false;
+    const original=structuredClone(authored),expected=structuredClone(authored);
+    expected.people[0].decoration.id='none';
+    const text=JSON.stringify(authored);
+    assert.deepEqual(parseConfigFile(text),expected,id);
+    for(const key of [STORAGE_KEY,'tyx-signature.website.v6','tyx-signature.website.v2']){
+      const restored=loadConfig({getItem:requested=>requested===key?text:null});
+      assert.equal(restored.warning,undefined,`${id}/${key}`);
+      assert.deepEqual(restored.config,expected,`${id}/${key}`);
+    }
+    assert.deepEqual(validateConfig(authored),expected,id);
+    assert.deepEqual(authored,original,'normalizing a retired ornament does not mutate the supplied design');
+  }
 });
 
 test('active names, RGB colors and numeric limits reject unsafe file values',()=>{

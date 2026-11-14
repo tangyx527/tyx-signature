@@ -1,5 +1,6 @@
-import {useEffect,useLayoutEffect,useRef,useState} from 'react';
+import {useEffect,useLayoutEffect,useState} from 'react';
 import {APPEARANCE_KEY,SYSTEM_THEME_QUERY,applyAppearance,readAppearance,resolveAppearance,saveAppearance,type AppearanceMode} from './theme';
+import {usePopoverMotion} from './usePopoverMotion';
 
 const labels:Record<AppearanceMode,string>={light:'浅色',dark:'深色',system:'系统'};
 function AppearanceIcon({mode}:{mode:AppearanceMode}){
@@ -13,8 +14,8 @@ function currentPreference():AppearanceMode{
 export function ThemeSelector(){
   const [mode,setMode]=useState<AppearanceMode>(currentPreference);
   const [systemDark,setSystemDark]=useState(()=>window.matchMedia(SYSTEM_THEME_QUERY).matches);
-  const [expanded,setExpanded]=useState(false),[persisted,setPersisted]=useState(true);
-  const root=useRef<HTMLDetailsElement>(null);
+  const [persisted,setPersisted]=useState(true);
+  const {detailsRef,panelRef,expanded,onSummaryClick,close}=usePopoverMotion();
   const theme=resolveAppearance(mode,systemDark);
   useLayoutEffect(()=>applyAppearance(document,mode,systemDark),[mode,systemDark]);
   useEffect(()=>{
@@ -25,20 +26,17 @@ export function ThemeSelector(){
       try{if(event.storageArea&&event.storageArea!==window.localStorage)return;}catch{return;}
       setMode(currentPreference());setPersisted(true);
     };
-    const outside=(event:PointerEvent)=>{if(event.target instanceof Node&&root.current&&!root.current.contains(event.target))root.current.open=false;};
-    const escape=(event:KeyboardEvent)=>{if(event.key==='Escape'&&root.current?.open){root.current.open=false;root.current.querySelector('summary')?.focus();}};
     syncSystem();media.addEventListener('change',syncSystem);window.addEventListener('storage',syncStorage);
-    document.addEventListener('pointerdown',outside);document.addEventListener('keydown',escape);
-    return ()=>{media.removeEventListener('change',syncSystem);window.removeEventListener('storage',syncStorage);document.removeEventListener('pointerdown',outside);document.removeEventListener('keydown',escape);};
+    return ()=>{media.removeEventListener('change',syncSystem);window.removeEventListener('storage',syncStorage);};
   },[]);
   const choose=(next:AppearanceMode)=>{
     setMode(next);
     try{setPersisted(saveAppearance(window.localStorage,next));}catch{setPersisted(false);}
-    if(root.current){root.current.open=false;root.current.querySelector('summary')?.focus();}
+    close(true);
   };
-  return <details className="appearance-menu" ref={root} onToggle={event=>setExpanded(event.currentTarget.open)}>
-    <summary className="appearance-trigger" aria-label="界面模式" aria-expanded={expanded} aria-controls="appearance-options" title={`界面模式：${labels[mode]}`}><AppearanceIcon mode={mode}/><span className="appearance-current-label">{labels[mode]}</span></summary>
-    <div className="appearance-panel" id="appearance-options">
+  return <details className="appearance-menu" ref={detailsRef}>
+    <summary className="appearance-trigger" onClick={onSummaryClick} aria-label="界面模式" aria-expanded={expanded} aria-controls="appearance-options" title={`界面模式：${labels[mode]}`}><AppearanceIcon mode={mode}/><span className="appearance-current-label">{labels[mode]}</span></summary>
+    <div className="appearance-panel" id="appearance-options" ref={panelRef}>
       <div className="appearance-label">界面模式</div>
       <div className="appearance-options" role="group" aria-label="选择界面模式">
         {(['light','dark','system'] as const).map(option=><button className="appearance-option" key={option} aria-pressed={mode===option} onClick={()=>choose(option)}><AppearanceIcon mode={option}/><span className="appearance-option-label">{labels[option]}</span></button>)}

@@ -2,10 +2,9 @@ import {canvasSize,validateConfig,type WebConfig} from './model';
 import {prepareScene,renderScene} from './renderer';
 import {cancelled,prepareAudio,withCancellation} from './audio';
 
-const FPS=30;
 const VIDEO_BITRATE=8_000_000;
 const AUDIO_BITRATE=192_000;
-const CODECS=['avc1.640028','avc1.4d0028','avc1.420028'];
+const CODECS={30:['avc1.640028','avc1.4d0028','avc1.420028'],60:['avc1.64002a','avc1.4d002a','avc1.42002a']};
 const SWITCH_BROWSER='请换用较新的系统浏览器，或在电脑上的 Chrome、Edge 中导出。';
 
 type Support={supported:boolean;reason?:string};
@@ -28,18 +27,19 @@ async function detectSupport(config:WebConfig,withAudio:boolean):Promise<Encoder
   }
   const {canEncodeVideo,canEncodeAudio,Quality}=await import('mediabunny');
   const {width,height}=canvasSize(config.canvas.aspect);
+  const fps=config.canvas.fps,bitrate=VIDEO_BITRATE*fps/30;
   let selected:string|undefined;
-  for(const codec of CODECS){
+  for(const codec of CODECS[fps]){
     try{
       // Mediabunny's check includes size and quality; the native check also includes our actual frame rate.
-      const native=await VideoEncoder.isConfigSupported({codec,width,height,bitrate:VIDEO_BITRATE,framerate:FPS,latencyMode:'quality',hardwareAcceleration:'no-preference'});
-      if(native.supported&&await canEncodeVideo('avc',{width,height,quality:new Quality({bitrate:VIDEO_BITRATE}),fullCodecString:codec,latencyMode:'quality',hardwareAcceleration:'no-preference'})){
+      const native=await VideoEncoder.isConfigSupported({codec,width,height,bitrate,framerate:fps,latencyMode:'quality',hardwareAcceleration:'no-preference'});
+      if(native.supported&&await canEncodeVideo('avc',{width,height,quality:new Quality({bitrate}),fullCodecString:codec,latencyMode:'quality',hardwareAcceleration:'no-preference'})){
         selected=codec;
         break;
       }
     }catch{/* Another AVC profile may still be usable on this device. */}
   }
-  if(!selected)return {supported:false,reason:`当前设备不能导出 ${width} × ${height}、30 帧的 MP4。${SWITCH_BROWSER}`};
+  if(!selected)return {supported:false,reason:`当前设备不能导出 ${width} × ${height}、${fps} 帧的 MP4。${SWITCH_BROWSER}`};
   if(withAudio&&!await canEncodeAudio('aac',{numberOfChannels:2,sampleRate:48000,quality:new Quality({bitrate:AUDIO_BITRATE})})){
     return {supported:false,reason:`当前浏览器不能把音乐编码进 MP4，可移除音乐后导出。${SWITCH_BROWSER}`};
   }
@@ -69,8 +69,9 @@ export async function exportVideo(input:WebConfig,options:ExportOptions={}):Prom
   if(!support.supported||!support.codec)throw new Error(support.reason??`当前浏览器无法导出 MP4。${SWITCH_BROWSER}`);
   cancelled(signal);
   const scene=prepareScene(config);
-  const frames=Math.round(scene.duration*FPS);
-  const duration=frames/FPS;
+  const fps=config.canvas.fps,bitrate=VIDEO_BITRATE*fps/30;
+  const frames=Math.round(scene.duration*fps);
+  const duration=frames/fps;
   const canvas=document.createElement('canvas');
   canvas.width=scene.width;
   canvas.height=scene.height;
@@ -94,10 +95,10 @@ export async function exportVideo(input:WebConfig,options:ExportOptions={}):Prom
     const target=new BufferTarget();
     output=new Output({format:new Mp4OutputFormat({fastStart:'in-memory'}),target});
     const videoSource=new CanvasSource(canvas,{
-      codec:'avc',quality:new Quality({bitrate:VIDEO_BITRATE}),fullCodecString:support.codec,
+      codec:'avc',quality:new Quality({bitrate}),fullCodecString:support.codec,
       latencyMode:'quality',hardwareAcceleration:'no-preference',alpha:'discard',keyFrameInterval:1,
     });
-    output.addVideoTrack(videoSource,{frameRate:FPS});
+    output.addVideoTrack(videoSource,{frameRate:fps});
     const audioSource=audio?new AudioBufferSource({codec:'aac',quality:new Quality({bitrate:AUDIO_BITRATE})}):undefined;
     if(audioSource)output.addAudioTrack(audioSource);
     cancelled(signal);
@@ -110,8 +111,8 @@ export async function exportVideo(input:WebConfig,options:ExportOptions={}):Prom
     }
     for(let frame=0;frame<frames;frame++){
       cancelled(signal);
-      renderScene(canvas,scene,frame/FPS);
-      await withCancellation(videoSource.add(frame/FPS,1/FPS),signal);
+      renderScene(canvas,scene,frame/fps);
+      await withCancellation(videoSource.add(frame/fps,1/fps),signal);
       onProgress?.(.1+.84*(frame+1)/frames,`制作视频 ${frame+1} / ${frames} 帧`);
       // Give touch, progress painting and cancel events time to run; this does not set animation timing.
       if(frame%4===0)await new Promise<void>(resolve=>setTimeout(resolve,0));

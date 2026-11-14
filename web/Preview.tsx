@@ -1,32 +1,43 @@
-import {useCallback,useEffect,useLayoutEffect,useRef,useState,type PointerEvent,type CSSProperties} from 'react';
-import {createPortal} from 'react-dom';
-import {hitTest,renderScene,type PreparedScene} from './renderer';
+import {useCallback,useEffect,useLayoutEffect,useMemo,useRef,useState,type PointerEvent,type KeyboardEvent as ReactKeyboardEvent,type CSSProperties} from 'react';
+import {hitTest,renderScene,type Hit,type PreparedScene} from './renderer';
 import type {WebConfig} from './model';
 import {audioEnvelope,audioWindow} from './audio';
 import {Icon} from './ui';
+import {resolveMotionSelection} from './animation-catalog';
+import {previewPhases,previewRange,type PreviewPhase} from './preview-timeline';
 
 type DragTarget='signature'|'decoration';
-type PreviewProps={scene:PreparedScene;selected:0|1;config:WebConfig;audioUrl?:string;pauseToken:number;disabled?:boolean;repeat?:boolean;controlsTarget?:HTMLElement|null;onStartPlayback?:()=>void;onSelect:(i:0|1)=>void;onDrag:(index:0|1,target:DragTarget,dx:number,dy:number)=>void};
+export type AnimationPreviewRequest={token:number;phase:'intro'|'outro'};
+type PreviewProps={scene:PreparedScene;selected:0|1;config:WebConfig;audioUrl?:string;pauseToken:number;completeToken?:number;previewRequest?:AnimationPreviewRequest;disabled?:boolean;repeat?:boolean;controlsTarget?:HTMLElement|null;onStartPlayback?:()=>void;onSelect:(i:0|1)=>void;onSelectElement?:(index:0|1,target:DragTarget)=>void;onGestureStart?:()=>void;onGestureEnd?:()=>void;onDrag:(index:0|1,target:DragTarget,dx:number,dy:number)=>void};
 
-export function Preview({scene,config,audioUrl,pauseToken,disabled=false,repeat=true,controlsTarget=null,onStartPlayback,onSelect,onDrag}:PreviewProps){
+export function Preview({scene,selected,config,audioUrl,pauseToken,completeToken=0,previewRequest,disabled=false,repeat=true,onStartPlayback,onSelect,onSelectElement,onGestureStart,onGestureEnd,onDrag}:PreviewProps){
   const canvas=useRef<HTMLCanvasElement>(null),stage=useRef<HTMLDivElement>(null),audio=useRef<HTMLAudioElement>(null);
   const [display,setDisplay]=useState({width:640,height:360});
   const stageRoom=useRef({width:0,height:0});
-  const [time,setTime]=useState(0),[playing,setPlaying]=useState(false),[freeDrag,setFreeDrag]=useState(false);
-  const [completePreview,setCompletePreview]=useState(false),completePreviewRef=useRef(false);
+  const [time,setTime]=useState(scene.editingTime),[playing,setPlaying]=useState(false),[loop,setLoop]=useState(repeat);
+  const [selectedTarget,setSelectedTarget]=useState<DragTarget|null>(null);
+  const [segment,setSegment]=useState<PreviewPhase['id']|null>(null),segmentRef=useRef<PreviewPhase['id']|null>(null);
+  const [completePreview,setCompletePreview]=useState(true),completePreviewRef=useRef(true);
   const clock=useRef(0),currentScene=useRef(scene),playingRef=useRef(false),musicEnabled=useRef(false);
-  const latest=useRef({config,audioUrl,disabled,repeat,onStartPlayback,pauseToken});
+  const latest=useRef({config,audioUrl,disabled,repeat:loop,onStartPlayback,pauseToken,onGestureStart,onGestureEnd});
   const anchor=useRef<{startedAt:number;offset:number;finishedAt:number|null}>({startedAt:0,offset:0,finishedAt:null});
-  const drag=useRef<{id:number;x:number;y:number;index:0|1;target:DragTarget}|null>(null);
-  const previousIdentity=useRef<string|null>(null),previousPauseToken=useRef(pauseToken);
+  const drag=useRef<{id:number;x:number;y:number;index:0|1;target:DragTarget;element:HTMLElement}|null>(null);
+  const keyboardGesture=useRef(false);
+  const previousIdentity=useRef<object|null>(null),previousPauseToken=useRef(pauseToken),previousCompleteToken=useRef(completeToken);
+  const previousPreviewRequest=useRef<number|undefined>(undefined);
   currentScene.current=scene;
-  latest.current={config,audioUrl,disabled,repeat,onStartPlayback,pauseToken};
-  const identity=JSON.stringify({mode:scene.config.mode,introOutroEnabled:scene.config.animation?.introOutroEnabled??true,people:scene.config.people.slice(0,scene.config.mode==='couple'?2:1).map(person=>({name:person.name,family:person.font.family}))});
+  latest.current={config,audioUrl,disabled,repeat:loop,onStartPlayback,pauseToken,onGestureStart,onGestureEnd};
+  const motionSelection=resolveMotionSelection(scene.config.animation),motionIdentity=motionSelection.intro+'/'+motionSelection.outro;
+  const identity=useMemo(()=>({}),[scene.config.mode,motionIdentity,scene.people[0]?.brush,scene.people[1]?.brush]);
+  const phases=useMemo(()=>previewPhases(scene),[scene]);
+  useEffect(()=>setLoop(repeat),[repeat]);
 
   const setPlayback=useCallback((value:boolean)=>{playingRef.current=value;setPlaying(value);},[]);
   const resetAnchor=useCallback((offset:number)=>{anchor.current={startedAt:performance.now(),offset,finishedAt:null};},[]);
-  const showFrame=useCallback((value:number)=>{
-    const current=currentScene.current,t=completePreviewRef.current?current.editingTime:Math.max(0,Math.min(current.duration,value));
+  const showFrame=useCallback((value:number,skipUnchanged=false)=>{
+    const current=currentScene.current,fps=current.config.canvas.fps,bounded=Math.max(0,Math.min(current.duration,value));
+    const t=completePreviewRef.current?current.editingTime:bounded>=current.duration?current.duration:Math.floor(bounded*fps+1e-7)/fps;
+    if(skipUnchanged&&t===clock.current)return;
     clock.current=t;
     setTime(t);
     if(canvas.current)renderScene(canvas.current,current,t,completePreviewRef.current);
@@ -35,9 +46,14 @@ export function Preview({scene,config,audioUrl,pauseToken,disabled=false,repeat=
   const showComplete=useCallback(()=>{
     if(latest.current.disabled)return;
     pause();completePreviewRef.current=true;setCompletePreview(true);
+    segmentRef.current=null;setSegment(null);
     const editingTime=currentScene.current.editingTime;
     resetAnchor(editingTime);showFrame(editingTime);
   },[pause,resetAnchor,showFrame]);
+  useEffect(()=>{
+    if(previousCompleteToken.current===completeToken)return;
+    previousCompleteToken.current=completeToken;showComplete();
+  },[completeToken,showComplete]);
   const syncAudio=useCallback((t:number,play:boolean)=>{
     const player=audio.current,props=latest.current;
     if(!player||!props.audioUrl)return;
@@ -85,12 +101,17 @@ export function Preview({scene,config,audioUrl,pauseToken,disabled=false,repeat=
     previousIdentity.current=identity;
     musicEnabled.current=false;
     audio.current?.pause();
+    const pointer=drag.current;
+    if(pointer?.element.hasPointerCapture(pointer.id))pointer.element.releasePointerCapture(pointer.id);
+    if(pointer)latest.current.onGestureEnd?.();
     drag.current=null;
-    const next=completePreviewRef.current?currentScene.current.editingTime:0;
+    segmentRef.current=null;setSegment(null);
+    completePreviewRef.current=true;setCompletePreview(true);
+    const next=currentScene.current.editingTime;
     resetAnchor(next);
     showFrame(next);
-    setPlayback(!latest.current.disabled&&!completePreviewRef.current);
-  },[identity,resetAnchor,setPlayback,showFrame]);
+    setPlayback(false);
+  },[identity,motionIdentity,resetAnchor,setPlayback,showFrame]);
 
   useLayoutEffect(()=>{
     if(completePreviewRef.current||drag.current){
@@ -112,7 +133,8 @@ export function Preview({scene,config,audioUrl,pauseToken,disabled=false,repeat=
     pause();
     const pointer=drag.current;
     drag.current=null;
-    if(pointer&&canvas.current?.hasPointerCapture(pointer.id))canvas.current.releasePointerCapture(pointer.id);
+    if(pointer?.element.hasPointerCapture(pointer.id))pointer.element.releasePointerCapture(pointer.id);
+    if(pointer)latest.current.onGestureEnd?.();
   },[disabled,pause]);
 
   useEffect(()=>{
@@ -120,26 +142,13 @@ export function Preview({scene,config,audioUrl,pauseToken,disabled=false,repeat=
     let raf=0;
     const tick=(now:number)=>{
       if(!playingRef.current||latest.current.disabled)return;
-      const duration=currentScene.current.duration,transport=anchor.current;
-      if((currentScene.current.config.animation?.introOutroEnabled??true)&&latest.current.repeat){
-        // One continuous scene clock drives writing, particles and the ink morph.
-        const elapsed=transport.offset+(now-transport.startedAt)/1000,t=Math.max(0,elapsed%duration);
-        transport.finishedAt=null;showFrame(t);syncAudio(t,true);
-      }else if(transport.finishedAt!==null){
-        syncAudio(duration,false);
-        if(!latest.current.repeat)pause();
-        else if(now-transport.finishedAt>=650){
-          resetAnchor(0);showFrame(0);syncAudio(0,true);
-        }
-      }else{
-        const t=Math.min(duration,transport.offset+(now-transport.startedAt)/1000);
-        showFrame(t);
-        syncAudio(t,t<duration);
-        if(t>=duration){
-          if(latest.current.repeat)transport.finishedAt=now;
-          else pause();
-        }
-      }
+      const current=currentScene.current,transport=anchor.current,range=previewRange(current,segmentRef.current);
+      const elapsed=transport.offset+(now-transport.startedAt)/1000,span=range.end-range.start;
+      if(span<=0){pause();return;}
+      const t=latest.current.repeat?range.start+Math.max(0,elapsed-range.start)%span:Math.min(range.end,elapsed);
+      // Audio follows scene time, including when replaying only one phase.
+      showFrame(t,true);syncAudio(t,t<range.end);
+      if(!latest.current.repeat&&t>=range.end)pause();
       if(playingRef.current)raf=requestAnimationFrame(tick);
     };
     raf=requestAnimationFrame(tick);
@@ -153,50 +162,135 @@ export function Preview({scene,config,audioUrl,pauseToken,disabled=false,repeat=
     completePreviewRef.current=false;setCompletePreview(false);
     latest.current.onStartPlayback?.();
     musicEnabled.current=true;
-    const duration=currentScene.current.duration,t=wasComplete||clock.current>=duration-.01?0:clock.current;
+    const range=previewRange(currentScene.current,segmentRef.current);
+    const t=wasComplete||clock.current>=range.end-.01||clock.current<range.start?range.start:clock.current;
     resetAnchor(t);showFrame(t);syncAudio(t,true);setPlayback(true);
   },[pause,resetAnchor,setPlayback,showFrame,syncAudio]);
   useEffect(()=>{
     const key=(event:KeyboardEvent)=>{
-      if(event.code!=='Space'||(event.target as HTMLElement)?.closest('input,button,select,textarea,summary,a,audio,video,[contenteditable=true]'))return;
+      if(event.defaultPrevented||event.repeat||event.isComposing||event.ctrlKey||event.metaKey||event.altKey||document.querySelector('dialog[open]')||event.code!=='Space'||(event.target as HTMLElement)?.closest('input,button,select,textarea,summary,a,audio,video,[contenteditable=true]'))return;
       event.preventDefault();toggle();
     };
     window.addEventListener('keydown',key);
     return ()=>window.removeEventListener('keydown',key);
   },[toggle]);
   useEffect(()=>()=>{musicEnabled.current=false;audio.current?.pause();},[]);
+  useEffect(()=>{
+    const visibility=()=>{if(document.hidden)pause();};
+    const blur=()=>{
+      if(!keyboardGesture.current)return;
+      keyboardGesture.current=false;latest.current.onGestureEnd?.();
+    };
+    document.addEventListener('visibilitychange',visibility);
+    window.addEventListener('blur',blur);
+    return ()=>{document.removeEventListener('visibilitychange',visibility);window.removeEventListener('blur',blur);};
+  },[pause]);
 
-  const down=(event:PointerEvent<HTMLCanvasElement>)=>{
+  const finishGesture=useCallback(()=>{
+    if(!drag.current)return;
+    drag.current=null;latest.current.onGestureEnd?.();
+  },[]);
+  const selectElement=(hit:Hit,openPanel=true)=>{
+    setSelectedTarget(hit.target);onSelect(hit.index);
+    if(openPanel)onSelectElement?.(hit.index,hit.target);
+    showComplete();
+  };
+  const down=(event:PointerEvent<HTMLElement>,target?:Hit)=>{
     if(disabled||!event.isPrimary||event.button!==0)return;
-    const rect=event.currentTarget.getBoundingClientRect(),x=(event.clientX-rect.left)/rect.width*scene.width,y=(event.clientY-rect.top)/rect.height*scene.height;
-    const hit=hitTest(scene,x,y);
-    if(hit)onSelect(hit.index);
-    if(!freeDrag||!hit)return;
-    event.preventDefault();pause();resetAnchor(scene.editingTime);showFrame(scene.editingTime);
-    drag.current={id:event.pointerId,x:event.clientX,y:event.clientY,index:hit.index,target:hit.target};
+    const rect=canvas.current?.getBoundingClientRect();if(!rect)return;
+    const x=(event.clientX-rect.left)/rect.width*scene.width,y=(event.clientY-rect.top)/rect.height*scene.height,hit=target??hitTest(scene,x,y);
+    if(!hit){setSelectedTarget(null);return;}
+    event.preventDefault();selectElement(hit);event.currentTarget.focus({preventScroll:true});
+    onGestureStart?.();
+    drag.current={id:event.pointerId,x:event.clientX,y:event.clientY,index:hit.index,target:hit.target,element:event.currentTarget};
     event.currentTarget.setPointerCapture(event.pointerId);
   };
-  const move=(event:PointerEvent<HTMLCanvasElement>)=>{
+  const move=(event:PointerEvent<HTMLElement>)=>{
     const pointer=drag.current;
     if(disabled||!pointer||pointer.id!==event.pointerId)return;
-    const rect=event.currentTarget.getBoundingClientRect();
+    const rect=canvas.current?.getBoundingClientRect();if(!rect)return;
     onDrag(pointer.index,pointer.target,(event.clientX-pointer.x)/rect.width,(event.clientY-pointer.y)/rect.height);
     pointer.x=event.clientX;pointer.y=event.clientY;
   };
-  const up=(event:PointerEvent<HTMLCanvasElement>)=>{
-    if(drag.current?.id===event.pointerId)drag.current=null;
+  const up=(event:PointerEvent<HTMLElement>)=>{
+    if(drag.current?.id===event.pointerId)finishGesture();
     if(event.currentTarget.hasPointerCapture(event.pointerId))event.currentTarget.releasePointerCapture(event.pointerId);
   };
+  const endKeyboardGesture=()=>{
+    if(!keyboardGesture.current)return;
+    keyboardGesture.current=false;onGestureEnd?.();
+  };
+  const nudge=(event:ReactKeyboardEvent<HTMLButtonElement>,hit:Hit)=>{
+    if(disabled||!['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(event.key))return;
+    event.preventDefault();selectElement(hit,false);
+    if(!keyboardGesture.current){keyboardGesture.current=true;onGestureStart?.();}
+    const step=event.shiftKey?10:1;
+    onDrag(hit.index,hit.target,(event.key==='ArrowLeft'?-step:event.key==='ArrowRight'?step:0)/scene.width,(event.key==='ArrowUp'?-step:event.key==='ArrowDown'?step:0)/scene.height);
+  };
+  const startRange=useCallback((id:PreviewPhase['id']|null)=>{
+    if(latest.current.disabled)return;
+    const range=previewRange(currentScene.current,id);if(range.end<=range.start)return;
+    pause();segmentRef.current=id;setSegment(id);
+    completePreviewRef.current=false;setCompletePreview(false);latest.current.onStartPlayback?.();musicEnabled.current=true;
+    resetAnchor(range.start);showFrame(range.start);syncAudio(range.start,true);setPlayback(true);
+  },[pause,resetAnchor,showFrame,syncAudio,setPlayback]);
+  useEffect(()=>{
+    if(!previewRequest||previousPreviewRequest.current===previewRequest.token)return;
+    previousPreviewRequest.current=previewRequest.token;
+    if(latest.current.disabled||document.hidden||document.querySelector('dialog[open]'))return;
+    const range=previewRange(currentScene.current,previewRequest.phase);
+    if(range.end-range.start<=1e-6){showComplete();return;}
+    startRange(previewRequest.phase);
+  },[previewRequest,startRange,showComplete]);
+  const goStart=()=>{
+    pause();completePreviewRef.current=false;setCompletePreview(false);
+    const start=previewRange(currentScene.current,segmentRef.current).start;
+    resetAnchor(start);showFrame(start);
+  };
   return <>
-    <div className="canvas-stage" ref={stage}><div className={`canvas-surface ${freeDrag?'is-draggable':''} ${scene.config.canvas.transparent?'is-transparent':''}`} style={{width:display.width,height:display.height,aspectRatio:scene.width/scene.height}}>
-      <canvas ref={canvas} width={scene.width} height={scene.height} role="img" aria-label={`${config.mode==='couple'?'情侣':'单人'}动态签名预览`} aria-describedby="signature-preview-help" onPointerDown={down} onPointerMove={move} onPointerUp={up} onPointerCancel={up}/>
-    </div></div>
-    {controlsTarget&&createPortal(<div className="canvas-tools" role="group" aria-label="设计查看"><button type="button" className="complete-preview-button" disabled={disabled} aria-pressed={completePreview} title="暂停动画，完整展示签名与装饰" onClick={showComplete}><Icon name="frame" size={16}/>完整展开</button><label className="free-drag"><input type="checkbox" aria-label="自由拖动" disabled={disabled} checked={freeDrag} onChange={event=>{const enabled=event.target.checked;pause();setFreeDrag(enabled);if(enabled){const editingTime=currentScene.current.editingTime;resetAnchor(editingTime);showFrame(editingTime);}}}/><Icon name="move" size={16}/>自由拖动</label></div>,controlsTarget)}
-    <div className="canvas-caption"><span className="canvas-meta">{scene.width} × {scene.height}<span>{scene.config.canvas.transparent?'透明背景':'实时预览'}</span></span></div>
-    <div className="playbar" role="group" aria-label="动画播放"><div className="play-actions"><button className="play-button" disabled={disabled} aria-label={playing?'暂停':completePreview?'播放动画':time>=scene.duration-.01?'重新播放':'播放'} title={playing?'暂停':completePreview?'播放动画':time>=scene.duration-.01?'重新播放':'播放'} onClick={toggle}><Icon name={playing?'pause':time>=scene.duration-.01?'replay':'play'} size={18}/></button></div>
-      <span className="time-label">{time.toFixed(1)}s</span><span className="timeline-control" style={{'--range-progress':time/scene.duration} as CSSProperties}><span className="range-rail" aria-hidden="true"><span className="range-fill"/></span><input className="timeline" type="range" disabled={disabled} aria-label="动画进度" aria-valuetext={`${time.toFixed(1)}秒，共${scene.duration.toFixed(1)}秒`} min={0} max={scene.duration} step={1/30} value={time} onChange={event=>{pause();completePreviewRef.current=false;setCompletePreview(false);const next=Number(event.target.value);resetAnchor(next);showFrame(next);}}/></span><span className="time-label">{scene.duration.toFixed(1)}s</span><span className="shortcut">空格 播放 / 暂停</span>
+    <div className="preview-toolbar">
+      <div className="preview-title"><strong>签名画布</strong><span>{scene.width} × {scene.height}</span>{scene.config.canvas.transparent&&<small>透明背景</small>}</div>
+      <div className="preview-tools" role="group" aria-label="设计查看">
+        <span className="canvas-mode-label">{completePreview?'正在编辑':'动画预览'}</span>
+        <button type="button" className="complete-preview-button" disabled={disabled} aria-pressed={completePreview} title="暂停动画，完整展示签名与装饰" onClick={showComplete}><Icon name="frame" size={16}/>完整展开</button>
+      </div>
     </div>
-    <p className="canvas-help" id="signature-preview-help" aria-live="polite">{completePreview?'完整设计已展开，调整时保持静止；点播放查看动画。':freeDrag?'拖动字迹或小图案时，会暂停在完成画面。':playing?musicEnabled.current?'正在循环播放，音乐会跟随选定片段。':'正在无声循环预览，可以随时暂停细看。':'点播放继续预览；选了音乐后，手动播放才会带上音乐。'}</p>
+    <div className="canvas-stage" ref={stage}><div className={`canvas-surface is-draggable ${scene.config.canvas.transparent?'is-transparent':''}`} style={{width:display.width,height:display.height,aspectRatio:scene.width/scene.height}}>
+      <canvas ref={canvas} width={scene.width} height={scene.height} tabIndex={-1} role="img" aria-label={`${config.mode==='couple'?'情侣':'单人'}动态签名预览`} aria-describedby="signature-preview-help" onPointerDown={down} onPointerMove={move} onPointerUp={up} onPointerCancel={up} onLostPointerCapture={finishGesture}/>
+      {completePreview&&!playing&&<div className="canvas-element-layer" role="group" aria-label="画布元素">
+        {[...scene.hitAreas].sort((a,b)=>(a.target==='decoration'?1:0)-(b.target==='decoration'?1:0)).map(area=>{
+          const name=(config.mode==='couple'?(area.index===0?'第一位':'第二位'):'')+(area.target==='signature'?'签名':'装饰');
+          const active=selected===area.index&&selectedTarget===area.target,b=area.bounds;
+          return <button type="button" className={`canvas-element-target ${active?'is-selected':''}`} key={`${area.index}-${area.target}`} disabled={disabled} aria-label={`选择${name}，方向键移动，Shift 加速`} aria-pressed={active} style={{left:`${b.minX/scene.width*100}%`,top:`${b.minY/scene.height*100}%`,width:`${(b.maxX-b.minX)/scene.width*100}%`,height:`${(b.maxY-b.minY)/scene.height*100}%`}} onFocus={()=>{setSelectedTarget(area.target);onSelect(area.index);}} onClick={()=>selectElement(area)} onPointerDown={event=>down(event,area)} onPointerMove={move} onPointerUp={up} onPointerCancel={up} onLostPointerCapture={finishGesture} onKeyDown={event=>nudge(event,area)} onKeyUp={event=>{if(event.key.startsWith('Arrow'))endKeyboardGesture();}} onBlur={endKeyboardGesture}>
+            {active&&<><span className="element-selection-label" aria-hidden="true">{name}</span>{(['nw','ne','sw','se'] as const).map(corner=><span className="selection-handle" data-corner={corner} key={corner} aria-hidden="true"/>)}</>}
+          </button>;
+        })}
+      </div>}
+    </div></div>
+    <p className="canvas-help" id="signature-preview-help">{completePreview?'点击签名或装饰选中，直接拖动调整位置；方向键微调。':'点击阶段单独预览，或播放完整动画；空格播放 / 暂停。'}</p>
+    <div className="animation-controls" role="group" aria-label="动画控制区">
+      <div className="control-toolbar">
+        <div className="transport-primary">
+          <button type="button" className="transport-button" disabled={disabled} aria-label="回到片段开头" title="回到片段开头" onClick={goStart}><Icon name="replay" size={17}/></button>
+          <button type="button" className="play-button" disabled={disabled} aria-label={playing?'暂停':'播放动画'} title={playing?'暂停（空格）':'播放（空格）'} onClick={toggle}><Icon name={playing?'pause':'play'} size={17}/></button>
+          <span className="transport-time"><strong>{time.toFixed(2)}</strong><span> / {scene.duration.toFixed(2)} 秒</span></span>
+        </div>
+        <div className="transport-options">
+          <button type="button" className="transport-button loop-button" disabled={disabled} aria-pressed={loop} onClick={()=>setLoop(value=>!value)} title="循环播放当前片段"><Icon name="replay" size={15}/><span>循环</span></button>
+          <span className="preview-fps">{config.canvas.fps} 帧</span>
+        </div>
+      </div>
+      <div className="phase-track" role="group" aria-label="选择动画预览片段">
+        <button type="button" className="phase-button phase-all" disabled={disabled} aria-pressed={segment===null&&!completePreview} onClick={()=>startRange(null)}><span>完整动画</span><small>{scene.duration.toFixed(1)}s</small></button>
+        {phases.map((phase,index)=>{
+          const available=phase.end-phase.start>1e-6,current=!completePreview&&time>=phase.start&&time<phase.end;
+          return <button type="button" key={phase.id} className={`phase-button phase-${phase.id}`} disabled={disabled||!available} aria-pressed={segment===phase.id&&!completePreview} data-current={current} title={available?`单独播放${phase.label}`:`未设置${phase.label}动画`} onClick={()=>startRange(phase.id)}><span><i aria-hidden="true">{String(index+1).padStart(2,'0')}</i>{phase.label}</span><small>{available?`${(phase.end-phase.start).toFixed(1)}s`:'未设置'}</small></button>;
+        })}
+      </div>
+      <div className="playbar">
+        <span className="time-label">0s</span><span className="timeline-control" style={{'--range-progress':time/scene.duration} as CSSProperties}><span className="range-rail" aria-hidden="true"><span className="range-fill"/></span><input className="timeline" type="range" disabled={disabled} aria-label="动画进度" aria-valuetext={`${time.toFixed(2)}秒，共${scene.duration.toFixed(2)}秒`} min={0} max={scene.duration} step={1/config.canvas.fps} value={time} onChange={event=>{pause();segmentRef.current=null;setSegment(null);completePreviewRef.current=false;setCompletePreview(false);const next=Number(event.target.value);resetAnchor(next);showFrame(next);}}/></span><span className="time-label">{scene.duration.toFixed(1)}s</span>
+      </div>
+    </div>
     {audioUrl&&<audio ref={audio} src={audioUrl} preload="metadata"/>}
   </>;
 }
