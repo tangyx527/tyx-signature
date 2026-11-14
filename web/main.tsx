@@ -261,8 +261,8 @@ function App(){
     onPointerCancelCapture={endGesture}>
     <a className="skip-link" href="#signature-workspace">跳到签名编辑区</a>
     <header className="topbar">
-      <h1 className="sr-only">TYX 签名工作室</h1>
-      <div className="project-identity"><span className="brand-mark"><Icon name="pen" size={22}/></span><div className="project-copy"><label className="sr-only" htmlFor="project-name">项目名称</label><input id="project-name" className="project-title" aria-label="项目名称" value={projectName} maxLength={80} spellCheck={false} autoComplete="off" disabled={busy} onChange={event=>updateDesign(current=>({...current,projectName:event.target.value}))} onBlur={()=>{if(!projectName.trim())updateDesign(current=>({...current,projectName:'未命名签名'}));}}/><span className="project-kind">tyx 签名工作室</span></div></div>
+      <h1 className="sr-only">tyx-动态签名</h1>
+      <div className="project-identity"><span className="brand-mark"><Icon name="pen" size={22}/></span><div className="project-copy"><label className="sr-only" htmlFor="project-name">项目名称</label><input id="project-name" className="project-title" aria-label="项目名称" value={projectName} maxLength={80} spellCheck={false} autoComplete="off" disabled={busy} onChange={event=>updateDesign(current=>({...current,projectName:event.target.value}))} onBlur={()=>{if(!projectName.trim())updateDesign(current=>({...current,projectName:'未命名签名'}));}}/><span className="project-kind">tyx-动态签名</span></div></div>
       <div className="top-actions">
         <div className="history-actions" role="group" aria-label="编辑历史">
           <button type="button" className="icon-button" aria-label="撤销" title="撤销 · Ctrl / ⌘ Z" aria-keyshortcuts="Control+Z Meta+Z" disabled={busy||!canUndo} onClick={()=>travel('undo')}><Icon name="replay" size={19}/></button>
